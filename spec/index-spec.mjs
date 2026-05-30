@@ -6,9 +6,11 @@ import {
   buildTurnInput,
   explainConnectionFailure,
   formatThreadLabel,
+  loadCodexThreads,
   populateThreadSelect,
   renderSessionTemplate,
   resolveThreadID,
+  sendToCodex,
 } from '../index.mjs';
 
 class FakeWebSocket {
@@ -140,6 +142,59 @@ test('renderSessionTemplate falls back on server error', async () => {
   });
   const rendered = await renderSessionTemplate(fetchFn, 'raw template', 'session-1', { warn() {} });
   assert.equal(rendered, 'raw template');
+});
+
+test('loadCodexThreads calls the Xenocept Codex bridge', async () => {
+  const fetchFn = async (url, options) => {
+    assert.equal(url, '/api/v1/codex/app-server/threads');
+    assert.equal(options.method, 'POST');
+    assert.equal(JSON.parse(options.body).wsURL, 'ws://127.0.0.1:14521');
+    return {
+      ok: true,
+      json: async () => ({ threads: [{ id: 'thread-a', preview: 'Task' }] }),
+    };
+  };
+
+  assert.deepEqual(await loadCodexThreads(fetchFn, 'ws://127.0.0.1:14521'), [
+    { id: 'thread-a', preview: 'Task' },
+  ]);
+});
+
+test('loadCodexThreads surfaces bridge failures', async () => {
+  const fetchFn = async () => ({
+    ok: false,
+    status: 502,
+    text: async () => 'connect to Codex app-server: failed',
+  });
+
+  await assert.rejects(
+    () => loadCodexThreads(fetchFn, 'ws://127.0.0.1:14521'),
+    /connect to Codex app-server/,
+  );
+});
+
+test('sendToCodex posts content to the Xenocept Codex bridge', async () => {
+  const fetchFn = async (url, options) => {
+    assert.equal(url, '/api/v1/codex/app-server/send');
+    assert.equal(options.method, 'POST');
+    assert.deepEqual(JSON.parse(options.body), {
+      wsURL: 'ws://127.0.0.1:14521',
+      threadID: 'thread-a',
+      mode: 'turn',
+      content: 'hello',
+    });
+    return {
+      ok: true,
+      json: async () => ({ threadID: 'thread-a', mode: 'turn' }),
+    };
+  };
+
+  assert.deepEqual(await sendToCodex(fetchFn, {
+    wsURL: 'ws://127.0.0.1:14521',
+    threadID: 'thread-a',
+    mode: 'turn',
+    content: 'hello',
+  }), { threadID: 'thread-a', mode: 'turn' });
 });
 
 test('resolveThreadID uses explicit configured thread', async () => {

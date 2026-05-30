@@ -136,15 +136,9 @@ export function setup(context) {
         loadButton.disabled = true;
         loadButton.textContent = 'Loading Codex sessions...';
         status.textContent = 'Connecting to Codex app-server...';
-        const client = new CodexAppServerClient({
-          wsURL: (wsInput.value || DEFAULT_WS_URL).trim(),
-          WebSocketImpl: globalThis.WebSocket,
-          timeoutMs: 5000,
-        });
 
         try {
-          await client.connect();
-          const threads = await client.availableThreads();
+          const threads = await loadCodexThreads(context.fetch, (wsInput.value || DEFAULT_WS_URL).trim());
           populateThreadSelect(threadSelect, threads, threadHidden.value);
 
           if (threads.length === 0) {
@@ -163,7 +157,6 @@ export function setup(context) {
           status.textContent = detail;
           log?.warn?.('Could not load Codex sessions:', error);
         } finally {
-          client.close();
           loadButton.textContent = 'Load Codex sessions';
           loadButton.disabled = false;
         }
@@ -198,29 +191,19 @@ export function setup(context) {
       const template = pluginConfig.template || DEFAULT_TEMPLATE;
       const rendered = await renderSessionTemplate(fetchFn, template, sessionID, log);
 
-      const client = new CodexAppServerClient({
-        wsURL: pluginConfig.wsURL || DEFAULT_WS_URL,
-        WebSocketImpl: globalThis.WebSocket,
-      });
-
       try {
-        await client.connect();
-        const threadID = await resolveThreadID(client, pluginConfig.threadID);
-        await client.resumeThread(threadID);
-        if (pluginConfig.mode === 'inject') {
-          await client.injectItems(threadID, buildInjectedUserItems(rendered));
-          return { success: true, threadID, mode: 'inject' };
-        }
-
-        await client.startTurn(threadID, rendered);
-        return { success: true, threadID, mode: 'turn' };
+        const result = await sendToCodex(fetchFn, {
+          wsURL: pluginConfig.wsURL || DEFAULT_WS_URL,
+          threadID: pluginConfig.threadID || '',
+          mode: pluginConfig.mode === 'inject' ? 'inject' : 'turn',
+          content: rendered,
+        });
+        return { success: true, threadID: result.threadID, mode: result.mode };
       } catch (error) {
         const { log: deliveryLog } = deliveryContext || {};
         const logger = deliveryLog || log;
         logger?.error?.('Codex delivery failed:', error);
         throw error;
-      } finally {
-        client.close();
       }
     }
   });
@@ -241,6 +224,32 @@ export async function renderSessionTemplate(fetchFn, template, sessionID, log = 
 
   const json = await response.json();
   return json && typeof json.rendered === 'string' ? json.rendered : '';
+}
+
+export async function loadCodexThreads(fetchFn, wsURL) {
+  const response = await fetchFn('/api/v1/codex/app-server/threads', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ wsURL: wsURL || DEFAULT_WS_URL }),
+  });
+  return parseCodexBridgeResponse(response, 'Could not load Codex sessions').then((json) => {
+    return Array.isArray(json.threads) ? json.threads : [];
+  });
+}
+
+export async function sendToCodex(fetchFn, payload) {
+  const response = await fetchFn('/api/v1/codex/app-server/send', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(payload || {}),
+  });
+  return parseCodexBridgeResponse(response, 'Could not send session to Codex');
+}
+
+async function parseCodexBridgeResponse(response, fallback) {
+  if (response.ok) return response.json();
+  const body = await response.text().catch(() => '');
+  throw new Error(body || `${fallback}: HTTP ${response.status}`);
 }
 
 export async function resolveThreadID(client, configuredThreadID) {
