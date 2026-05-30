@@ -38,7 +38,7 @@ export function setup(context) {
     static targetsCodingAgent = true;
 
     renderConfigUI(container, currentConfig) {
-      const { div, label, input, textarea, button, select, option, span, code } = context.elements;
+      const { div, label, input, textarea, button, span, code } = context.elements;
       const config = currentConfig || {};
       const mode = config.mode || 'turn';
 
@@ -89,30 +89,27 @@ export function setup(context) {
       ).build(document);
       container.appendChild(authGroup);
 
-      const threadGroup = div.class('form-group')(
-        label.class('form-label').for('codex-thread-id')('Thread ID'),
-        input.class('form-input')
-          .type('text')
-          .id('codex-thread-id')
-          .name('threadID')
-          .placeholder('Blank = use the only loaded Codex thread')
-          .value(config.threadID || '')(),
-        div.class('form-hint')(
-          'Pick from loaded Codex sessions below, or paste a thread ID manually.',
-        ),
-      ).build(document);
-      container.appendChild(threadGroup);
-
       const threadPickerGroup = div.class('form-group')(
-        label.class('form-label').for('codex-thread-picker')('Loaded Codex Sessions'),
-        select.class('form-select').id('codex-thread-picker')(
-          option.value('')('Click Load to discover sessions'),
-        ),
+        label.class('form-label').for('codex-thread-picker')('Codex Session'),
         button.class('secondary').type('button').id('codex-load-threads')('Load active Codex sessions'),
         div.class('form-hint').id('codex-thread-status')(
-          'Uses the WebSocket URL above to list Codex threads currently loaded in app-server.',
+          'Type a thread ID and press Enter, or load active sessions from the Codex app-server.',
         ),
       ).build(document);
+
+      const threadSelect = document.createElement('aeor-select');
+      threadSelect.id = 'codex-thread-picker';
+      threadSelect.setAttribute('creatable', '');
+      threadSelect.setAttribute('placeholder', 'Type a thread ID and press Enter...');
+      threadPickerGroup.insertBefore(threadSelect, threadPickerGroup.querySelector('#codex-load-threads'));
+
+      const threadHidden = document.createElement('input');
+      threadHidden.type = 'hidden';
+      threadHidden.name = 'threadID';
+      threadHidden.id = 'codex-thread-id';
+      threadHidden.value = config.threadID || '';
+      threadPickerGroup.appendChild(threadHidden);
+
       container.appendChild(threadPickerGroup);
 
       container.appendChild(div.class('form-group')(
@@ -132,16 +129,22 @@ export function setup(context) {
 
       const wsInput = wsGroup.querySelector('#codex-ws-url');
       const authInput = authGroup.querySelector('#codex-auth-token');
-      const threadInput = threadGroup.querySelector('#codex-thread-id');
-      const threadPicker = threadPickerGroup.querySelector('#codex-thread-picker');
       const loadButton = threadPickerGroup.querySelector('#codex-load-threads');
       const status = threadPickerGroup.querySelector('#codex-thread-status');
+      const initialThreadID = (config.threadID || '').trim();
 
-      threadPicker.addEventListener('change', () => {
-        if (threadPicker.value) threadInput.value = threadPicker.value;
+      populateThreadSelect(threadSelect, [], initialThreadID);
+      if (initialThreadID) threadSelect.value = initialThreadID;
+
+      const syncThreadHidden = () => {
+        threadHidden.value = threadSelect.value || '';
+      };
+
+      threadSelect.addEventListener('change', () => {
+        syncThreadHidden();
       });
 
-      loadButton.addEventListener('click', async () => {
+      const loadThreads = async () => {
         loadButton.disabled = true;
         status.textContent = 'Connecting to Codex app-server...';
         const client = new CodexAppServerClient({
@@ -154,15 +157,17 @@ export function setup(context) {
         try {
           await client.connect();
           const threads = await client.loadedThreads();
-          replaceThreadPickerOptions(threadPicker, threads, document);
+          populateThreadSelect(threadSelect, threads, threadHidden.value);
 
           if (threads.length === 0) {
             status.textContent = 'No loaded Codex sessions found. Open a Codex session, then load again.';
           } else if (threads.length === 1) {
-            threadPicker.value = threads[0].id;
-            threadInput.value = threads[0].id;
+            threadSelect.value = threads[0].id;
+            syncThreadHidden();
             status.textContent = 'Found 1 loaded Codex session and selected it.';
           } else {
+            if (threadHidden.value) threadSelect.value = threadHidden.value;
+            syncThreadHidden();
             status.textContent = `Found ${threads.length} loaded Codex sessions. Select the one to receive Xenocept submissions.`;
           }
         } catch (error) {
@@ -171,7 +176,10 @@ export function setup(context) {
           client.close();
           loadButton.disabled = false;
         }
-      });
+      };
+
+      loadButton.addEventListener('click', loadThreads);
+      loadThreads().catch(() => { /* status is updated in loadThreads */ });
     }
 
     validateConfig(pluginConfig) {
@@ -267,22 +275,29 @@ export function formatThreadLabel(thread) {
   return id;
 }
 
-export function replaceThreadPickerOptions(selectEl, threads, doc = document) {
-  while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+export function buildThreadOptions(threads, selectedThreadID = '') {
+  const options = [];
+  const seen = new Set();
+  const selected = (selectedThreadID || '').trim();
 
-  if (!Array.isArray(threads) || threads.length === 0) {
-    const opt = doc.createElement('option');
-    opt.value = '';
-    opt.textContent = 'No loaded Codex sessions';
-    selectEl.appendChild(opt);
-    return;
+  for (const thread of Array.isArray(threads) ? threads : []) {
+    if (!thread?.id || seen.has(thread.id)) continue;
+    seen.add(thread.id);
+    options.push({ value: thread.id, label: formatThreadLabel(thread) });
   }
 
-  for (const thread of threads) {
-    const opt = doc.createElement('option');
-    opt.value = thread.id;
-    opt.textContent = formatThreadLabel(thread);
-    selectEl.appendChild(opt);
+  if (selected && !seen.has(selected)) {
+    options.unshift({ value: selected, label: selected });
+  }
+
+  return options;
+}
+
+export function populateThreadSelect(selectEl, threads, selectedThreadID = '') {
+  const options = buildThreadOptions(threads, selectedThreadID);
+  selectEl.setOptions(options);
+  if (selectedThreadID && options.some((opt) => opt.value === selectedThreadID)) {
+    selectEl.value = selectedThreadID;
   }
 }
 

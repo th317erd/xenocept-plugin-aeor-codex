@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import {
   CodexAppServerClient,
+  buildThreadOptions,
   buildInjectedUserItems,
   buildTurnInput,
   formatThreadLabel,
+  populateThreadSelect,
   renderSessionTemplate,
-  replaceThreadPickerOptions,
   resolveThreadID,
 } from '../index.mjs';
 
@@ -83,36 +84,32 @@ test('formatThreadLabel prefers useful metadata', () => {
   assert.equal(formatThreadLabel({ id: 'thread-1' }), 'thread-1');
 });
 
-test('replaceThreadPickerOptions renders empty and loaded states', () => {
-  const options = [];
-  const fakeDoc = {
-    createElement() {
-      const opt = { value: '', textContent: '' };
-      options.push(opt);
-      return opt;
-    },
-  };
+test('buildThreadOptions preserves selected manual value and loaded sessions', () => {
+  assert.deepEqual(buildThreadOptions([], 'manual-thread'), [
+    { value: 'manual-thread', label: 'manual-thread' },
+  ]);
+
+  assert.deepEqual(buildThreadOptions([
+    { id: 'thread-1', title: 'Main' },
+    { id: 'thread-2', cwd: '/repo' },
+  ], 'thread-1'), [
+    { value: 'thread-1', label: 'Main (thread-1)' },
+    { value: 'thread-2', label: '/repo (thread-2)' },
+  ]);
+});
+
+test('populateThreadSelect uses aeor-select API and restores selection', () => {
+  const calls = [];
   const selectEl = {
-    firstChild: null,
-    children: [],
-    appendChild(opt) {
-      this.children.push(opt);
-      this.firstChild = this.children[0] || null;
-    },
-    removeChild() {
-      this.children.shift();
-      this.firstChild = this.children[0] || null;
+    value: '',
+    setOptions(options) {
+      calls.push(options);
     },
   };
 
-  replaceThreadPickerOptions(selectEl, [], fakeDoc);
-  assert.equal(selectEl.children[0].textContent, 'No loaded Codex sessions');
-
-  selectEl.children = [];
-  selectEl.firstChild = null;
-  replaceThreadPickerOptions(selectEl, [{ id: 'thread-1', title: 'Main' }], fakeDoc);
-  assert.equal(selectEl.children[0].value, 'thread-1');
-  assert.equal(selectEl.children[0].textContent, 'Main (thread-1)');
+  populateThreadSelect(selectEl, [{ id: 'thread-1', title: 'Main' }], 'thread-1');
+  assert.deepEqual(calls[0], [{ value: 'thread-1', label: 'Main (thread-1)' }]);
+  assert.equal(selectEl.value, 'thread-1');
 });
 
 test('renderSessionTemplate returns rendered body', async () => {
