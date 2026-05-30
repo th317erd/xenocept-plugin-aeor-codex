@@ -52,6 +52,8 @@ FakeWebSocket.responseFor = (msg) => {
   if (msg.method === 'initialize') return { userAgent: 'codex-test', codexHome: '/tmp/codex', platformFamily: 'unix', platformOs: 'linux' };
   if (msg.method === 'thread/loaded/list') return { data: ['thread-1'] };
   if (msg.method === 'thread/read') return { thread: { id: msg.params.threadId, title: 'Main task', cwd: '/repo' } };
+  if (msg.method === 'thread/list') return { data: [{ id: 'thread-1', preview: 'Main task', cwd: '/repo', status: { type: 'notLoaded' } }] };
+  if (msg.method === 'thread/resume') return { thread: { id: msg.params.threadId, status: { type: 'idle' } } };
   if (msg.method === 'turn/start') return { turn: { id: 'turn-1' } };
   if (msg.method === 'thread/inject_items') return {};
   return {};
@@ -145,19 +147,19 @@ test('resolveThreadID uses explicit configured thread', async () => {
   assert.equal(id, 'explicit');
 });
 
-test('resolveThreadID uses the only loaded thread', async () => {
-  const id = await resolveThreadID({ loadedThreadIDs: async () => ['thread-a'] }, '');
+test('resolveThreadID uses the only available thread', async () => {
+  const id = await resolveThreadID({ availableThreads: async () => [{ id: 'thread-a' }] }, '');
   assert.equal(id, 'thread-a');
 });
 
-test('resolveThreadID rejects zero or multiple loaded threads', async () => {
+test('resolveThreadID rejects zero or multiple available threads', async () => {
   await assert.rejects(
-    () => resolveThreadID({ loadedThreadIDs: async () => [] }, ''),
-    /No loaded Codex threads/,
+    () => resolveThreadID({ availableThreads: async () => [] }, ''),
+    /No Codex sessions/,
   );
   await assert.rejects(
-    () => resolveThreadID({ loadedThreadIDs: async () => ['a', 'b'] }, ''),
-    /Multiple loaded Codex threads/,
+    () => resolveThreadID({ availableThreads: async () => [{ id: 'a' }, { id: 'b' }] }, ''),
+    /Multiple Codex sessions/,
   );
 });
 
@@ -171,11 +173,12 @@ test('CodexAppServerClient initializes and starts a turn', async () => {
   await client.connect();
   const loaded = await client.loadedThreadIDs();
   assert.deepEqual(loaded, ['thread-1']);
-  const threads = await client.loadedThreads();
-  assert.deepEqual(threads, [{ id: 'thread-1', title: 'Main task', name: '', cwd: '/repo', status: '' }]);
+  const threads = await client.availableThreads();
+  assert.deepEqual(threads, [{ id: 'thread-1', title: '', name: '', preview: 'Main task', cwd: '/repo', status: 'notLoaded' }]);
+  await client.resumeThread('thread-1');
   await client.startTurn('thread-1', 'hello');
   const sentMethods = FakeWebSocket.instances[0].sent.map((msg) => msg.method);
-  assert.deepEqual(sentMethods, ['initialize', 'initialized', 'thread/loaded/list', 'thread/loaded/list', 'thread/read', 'turn/start']);
+  assert.deepEqual(sentMethods, ['initialize', 'initialized', 'thread/loaded/list', 'thread/list', 'thread/resume', 'turn/start']);
   client.close();
 });
 

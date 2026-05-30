@@ -39,16 +39,15 @@ does not start work by itself.
 
 ## Thread Selection
 
-The config dialog can load sessions from the running app-server. It only
-sees sessions loaded in that app-server. A separate terminal-only Codex
-CLI session is not visible unless it is connected through app-server /
-remote-control.
+The config dialog loads recent Codex threads from the running app-server
+with `thread/list`. When a Xenocept session is sent, the plugin resumes
+the selected thread with `thread/resume` before starting the turn.
 
-If no thread is selected, the plugin asks Codex for loaded threads:
+If no thread is selected, the plugin asks Codex for available threads:
 
-- exactly one loaded thread: use it
-- zero loaded threads: fail with a setup error
-- more than one loaded thread: fail and ask for an explicit thread ID
+- exactly one thread: use it
+- zero threads: fail with a setup error
+- more than one thread: fail and ask for an explicit thread ID
 
 This avoids the comedic version of "helpful" where a screenshot meant
 for one repo lands in another.

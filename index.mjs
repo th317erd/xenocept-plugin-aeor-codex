@@ -80,7 +80,7 @@ export function setup(context) {
 
       const threadPickerGroup = div.class('form-group')(
         label.class('form-label').for('codex-thread-picker')('Codex Session'),
-        button.class('secondary').type('button').id('codex-load-threads')('Load active Codex sessions'),
+        button.class('secondary').type('button').id('codex-load-threads')('Load Codex sessions'),
         div.class('form-hint').id('codex-thread-status')(
           'Type a thread ID and press Enter, or load sessions from a running Codex app-server.',
         ),
@@ -144,11 +144,11 @@ export function setup(context) {
 
         try {
           await client.connect();
-          const threads = await client.loadedThreads();
+          const threads = await client.availableThreads();
           populateThreadSelect(threadSelect, threads, threadHidden.value);
 
           if (threads.length === 0) {
-            status.textContent = 'Connected, but no app-server sessions are loaded. Current terminal-only Codex CLI sessions are not exposed here.';
+            status.textContent = 'Connected, but no Codex sessions were found in app-server history.';
           } else if (threads.length === 1) {
             threadSelect.value = threads[0].id;
             syncThreadHidden();
@@ -164,7 +164,7 @@ export function setup(context) {
           log?.warn?.('Could not load Codex sessions:', error);
         } finally {
           client.close();
-          loadButton.textContent = 'Load active Codex sessions';
+          loadButton.textContent = 'Load Codex sessions';
           loadButton.disabled = false;
         }
       };
@@ -206,6 +206,7 @@ export function setup(context) {
       try {
         await client.connect();
         const threadID = await resolveThreadID(client, pluginConfig.threadID);
+        await client.resumeThread(threadID);
         if (pluginConfig.mode === 'inject') {
           await client.injectItems(threadID, buildInjectedUserItems(rendered));
           return { success: true, threadID, mode: 'inject' };
@@ -246,17 +247,17 @@ export async function resolveThreadID(client, configuredThreadID) {
   const explicit = typeof configuredThreadID === 'string' ? configuredThreadID.trim() : '';
   if (explicit) return explicit;
 
-  const loaded = await client.loadedThreadIDs();
-  if (loaded.length === 1) return loaded[0];
-  if (loaded.length === 0) {
-    throw new Error('No loaded Codex threads. Open a Codex session or configure Thread ID explicitly.');
+  const available = await client.availableThreads();
+  if (available.length === 1) return available[0].id;
+  if (available.length === 0) {
+    throw new Error('No Codex sessions found. Start Codex app-server or configure Thread ID explicitly.');
   }
-  throw new Error(`Multiple loaded Codex threads (${loaded.length}). Configure Thread ID explicitly.`);
+  throw new Error(`Multiple Codex sessions found (${available.length}). Configure Thread ID explicitly.`);
 }
 
 export function formatThreadLabel(thread) {
   const id = thread?.id || '';
-  const title = (thread?.title || thread?.name || '').trim();
+  const title = (thread?.title || thread?.name || thread?.preview || '').trim();
   const cwd = (thread?.cwd || '').trim();
   const shortID = id.length > 16 ? `${id.slice(0, 8)}...${id.slice(-6)}` : id;
   if (title && cwd) return `${title} - ${cwd} (${shortID})`;
@@ -354,30 +355,34 @@ export class CodexAppServerClient {
     });
   }
 
-  async loadedThreads() {
-    const ids = await this.loadedThreadIDs();
-    const out = [];
-    for (const id of ids) {
-      try {
-        const result = await this.request('thread/read', {
-          threadId: id,
-          includeTurns: false,
-        });
-        const thread = result && result.thread && typeof result.thread === 'object'
-          ? result.thread
-          : {};
-        out.push({
-          id,
-          title: typeof thread.title === 'string' ? thread.title : '',
-          name: typeof thread.name === 'string' ? thread.name : '',
-          cwd: typeof thread.cwd === 'string' ? thread.cwd : '',
-          status: typeof thread.status === 'string' ? thread.status : '',
-        });
-      } catch (_error) {
-        out.push({ id });
+  async availableThreads() {
+    const result = await this.request('thread/list', { limit: 50 });
+    const data = result && Array.isArray(result.data) ? result.data : [];
+    return data
+      .filter((thread) => thread && typeof thread.id === 'string' && thread.id.length > 0)
+      .map((thread) => ({
+        id: thread.id,
+        title: typeof thread.title === 'string' ? thread.title : '',
+        name: typeof thread.name === 'string' ? thread.name : '',
+        preview: typeof thread.preview === 'string' ? thread.preview : '',
+        cwd: typeof thread.cwd === 'string' ? thread.cwd : '',
+        status: typeof thread.status?.type === 'string' ? thread.status.type : '',
+      }));
+  }
+
+  async resumeThread(threadID) {
+    if (!threadID) throw new Error('threadID is required');
+    try {
+      await this.request('thread/resume', {
+        threadId: threadID,
+        includeTurns: false,
+      });
+    } catch (error) {
+      const message = String(error?.message || error || '');
+      if (!/already loaded|active|loaded/i.test(message)) {
+        throw error;
       }
     }
-    return out;
   }
 
   startTurn(threadID, text) {
