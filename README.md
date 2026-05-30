@@ -7,18 +7,22 @@ to a running Codex app-server thread.
 ## Requirements
 
 - Xenocept running locally.
-- Codex app-server remote control enabled and listening on a WebSocket
-  URL reachable from the Xenocept webview.
+- Codex app-server listening on a WebSocket URL reachable from the
+  Xenocept webview.
 
-Start Codex remote control:
+For local testing:
 
 ```sh
-codex remote-control start --json
+codex app-server --listen ws://127.0.0.1:14521
 ```
 
-Use the returned WebSocket URL in the destination config. If your Codex
-build requires a bearer/capability token, paste that token in the
-optional auth token field.
+Use `ws://127.0.0.1:14521` in the destination config.
+
+`codex remote-control start --json` is the nicer managed-daemon path
+when Codex was installed through the standalone installer. This machine's
+current Codex install does not provide that standalone daemon path, so
+the direct `codex app-server --listen ...` command is the practical dev
+route.
 
 ## Delivery Modes
 
@@ -35,7 +39,12 @@ does not start work by itself.
 
 ## Thread Selection
 
-If `Thread ID` is blank, the plugin asks Codex for loaded threads:
+The config dialog can load sessions from the running app-server. It only
+sees sessions loaded in that app-server. A separate terminal-only Codex
+CLI session is not visible unless it is connected through app-server /
+remote-control.
+
+If no thread is selected, the plugin asks Codex for loaded threads:
 
 - exactly one loaded thread: use it
 - zero loaded threads: fail with a setup error

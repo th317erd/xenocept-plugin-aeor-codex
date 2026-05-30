@@ -4,6 +4,7 @@ import {
   buildThreadOptions,
   buildInjectedUserItems,
   buildTurnInput,
+  explainConnectionFailure,
   formatThreadLabel,
   populateThreadSelect,
   renderSessionTemplate,
@@ -110,6 +111,11 @@ test('populateThreadSelect uses aeor-select API and restores selection', () => {
   populateThreadSelect(selectEl, [{ id: 'thread-1', title: 'Main' }], 'thread-1');
   assert.deepEqual(calls[0], [{ value: 'thread-1', label: 'Main (thread-1)' }]);
   assert.equal(selectEl.value, 'thread-1');
+});
+
+test('explainConnectionFailure gives actionable app-server setup', () => {
+  const msg = explainConnectionFailure(new Error('Failed to connect to Codex app-server WebSocket'));
+  assert.match(msg, /codex app-server --listen ws:\/\/127\.0\.0\.1:14521/);
 });
 
 test('renderSessionTemplate returns rendered body', async () => {

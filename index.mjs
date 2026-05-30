@@ -73,27 +73,16 @@ export function setup(context) {
           .placeholder(DEFAULT_WS_URL)
           .value(config.wsURL || DEFAULT_WS_URL)(),
         div.class('form-hint')(
-          'Run ', code('codex remote-control start --json'), ' and paste the WebSocket URL here.',
+          'For local testing, start Codex app-server with ', code('codex app-server --listen ws://127.0.0.1:14521'), '.',
         ),
       ).build(document);
       container.appendChild(wsGroup);
-
-      const authGroup = div.class('form-group')(
-        label.class('form-label').for('codex-auth-token')('Auth token'),
-        input.class('form-input')
-          .type('password')
-          .id('codex-auth-token')
-          .name('authToken')
-          .placeholder('Optional bearer/capability token')
-          .value(config.authToken || '')(),
-      ).build(document);
-      container.appendChild(authGroup);
 
       const threadPickerGroup = div.class('form-group')(
         label.class('form-label').for('codex-thread-picker')('Codex Session'),
         button.class('secondary').type('button').id('codex-load-threads')('Load active Codex sessions'),
         div.class('form-hint').id('codex-thread-status')(
-          'Type a thread ID and press Enter, or load active sessions from the Codex app-server.',
+          'Type a thread ID and press Enter, or load sessions from a running Codex app-server.',
         ),
       ).build(document);
 
@@ -128,7 +117,6 @@ export function setup(context) {
       ).build(document));
 
       const wsInput = wsGroup.querySelector('#codex-ws-url');
-      const authInput = authGroup.querySelector('#codex-auth-token');
       const loadButton = threadPickerGroup.querySelector('#codex-load-threads');
       const status = threadPickerGroup.querySelector('#codex-thread-status');
       const initialThreadID = (config.threadID || '').trim();
@@ -146,10 +134,10 @@ export function setup(context) {
 
       const loadThreads = async () => {
         loadButton.disabled = true;
+        loadButton.textContent = 'Loading Codex sessions...';
         status.textContent = 'Connecting to Codex app-server...';
         const client = new CodexAppServerClient({
           wsURL: (wsInput.value || DEFAULT_WS_URL).trim(),
-          authToken: authInput.value || '',
           WebSocketImpl: globalThis.WebSocket,
           timeoutMs: 5000,
         });
@@ -160,7 +148,7 @@ export function setup(context) {
           populateThreadSelect(threadSelect, threads, threadHidden.value);
 
           if (threads.length === 0) {
-            status.textContent = 'No loaded Codex sessions found. Open a Codex session, then load again.';
+            status.textContent = 'Connected, but no app-server sessions are loaded. Current terminal-only Codex CLI sessions are not exposed here.';
           } else if (threads.length === 1) {
             threadSelect.value = threads[0].id;
             syncThreadHidden();
@@ -171,9 +159,12 @@ export function setup(context) {
             status.textContent = `Found ${threads.length} loaded Codex sessions. Select the one to receive Xenocept submissions.`;
           }
         } catch (error) {
-          status.textContent = `Could not load Codex sessions: ${error.message || error}`;
+          const detail = explainConnectionFailure(error);
+          status.textContent = detail;
+          log?.warn?.('Could not load Codex sessions:', error);
         } finally {
           client.close();
+          loadButton.textContent = 'Load active Codex sessions';
           loadButton.disabled = false;
         }
       };
@@ -209,7 +200,6 @@ export function setup(context) {
 
       const client = new CodexAppServerClient({
         wsURL: pluginConfig.wsURL || DEFAULT_WS_URL,
-        authToken: pluginConfig.authToken || '',
         WebSocketImpl: globalThis.WebSocket,
       });
 
@@ -299,6 +289,18 @@ export function populateThreadSelect(selectEl, threads, selectedThreadID = '') {
   if (selectedThreadID && options.some((opt) => opt.value === selectedThreadID)) {
     selectEl.value = selectedThreadID;
   }
+}
+
+export function explainConnectionFailure(error) {
+  const message = String(error?.message || error || '');
+  if (/connect|websocket|closed before opening|timed out/i.test(message)) {
+    return [
+      'Could not connect to Codex app-server.',
+      'Start it with: codex app-server --listen ws://127.0.0.1:14521',
+      'The standalone remote-control command is nicer when installed, but this local app-server command is enough for testing.',
+    ].join(' ');
+  }
+  return `Could not load Codex sessions: ${message}`;
 }
 
 export function buildTurnInput(text) {
