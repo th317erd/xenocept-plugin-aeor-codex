@@ -28,7 +28,6 @@ export function setup(context) {
     static pluginID    = PLUGIN_ID;
     static name        = 'Codex';
     static version     = '0.1.0';
-    static icon        = 'C';
     static description = 'Send Xenocept sessions into a running Codex app-server thread.';
   });
 
@@ -36,9 +35,10 @@ export function setup(context) {
     static destinationID = 'org.aeor.xenocept.codex.destination';
     static name          = 'Codex';
     static description   = 'Deliver sessions to Codex via app-server remote control';
+    static targetsCodingAgent = true;
 
     renderConfigUI(container, currentConfig) {
-      const { div, label, input, textarea, span, code } = context.elements;
+      const { div, label, input, textarea, button, select, option, span, code } = context.elements;
       const config = currentConfig || {};
       const mode = config.mode || 'turn';
 
@@ -64,7 +64,7 @@ export function setup(context) {
       else turnRadio.checked = true;
       container.appendChild(modeGroup);
 
-      container.appendChild(div.class('form-group')(
+      const wsGroup = div.class('form-group')(
         label.class('form-label').for('codex-ws-url')('Codex app-server WebSocket URL'),
         input.class('form-input')
           .type('text')
@@ -75,9 +75,10 @@ export function setup(context) {
         div.class('form-hint')(
           'Run ', code('codex remote-control start --json'), ' and paste the WebSocket URL here.',
         ),
-      ).build(document));
+      ).build(document);
+      container.appendChild(wsGroup);
 
-      container.appendChild(div.class('form-group')(
+      const authGroup = div.class('form-group')(
         label.class('form-label').for('codex-auth-token')('Auth token'),
         input.class('form-input')
           .type('password')
@@ -85,9 +86,10 @@ export function setup(context) {
           .name('authToken')
           .placeholder('Optional bearer/capability token')
           .value(config.authToken || '')(),
-      ).build(document));
+      ).build(document);
+      container.appendChild(authGroup);
 
-      container.appendChild(div.class('form-group')(
+      const threadGroup = div.class('form-group')(
         label.class('form-label').for('codex-thread-id')('Thread ID'),
         input.class('form-input')
           .type('text')
@@ -95,7 +97,23 @@ export function setup(context) {
           .name('threadID')
           .placeholder('Blank = use the only loaded Codex thread')
           .value(config.threadID || '')(),
-      ).build(document));
+        div.class('form-hint')(
+          'Pick from loaded Codex sessions below, or paste a thread ID manually.',
+        ),
+      ).build(document);
+      container.appendChild(threadGroup);
+
+      const threadPickerGroup = div.class('form-group')(
+        label.class('form-label').for('codex-thread-picker')('Loaded Codex Sessions'),
+        select.class('form-select').id('codex-thread-picker')(
+          option.value('')('Click Load to discover sessions'),
+        ),
+        button.class('secondary').type('button').id('codex-load-threads')('Load active Codex sessions'),
+        div.class('form-hint').id('codex-thread-status')(
+          'Uses the WebSocket URL above to list Codex threads currently loaded in app-server.',
+        ),
+      ).build(document);
+      container.appendChild(threadPickerGroup);
 
       container.appendChild(div.class('form-group')(
         label.class('form-label').for('codex-template')('Prompt Template'),
@@ -111,6 +129,49 @@ export function setup(context) {
           code('{{ ocrText }}'), ', ', code('{{ alternativeDescription }}'), '.',
         ),
       ).build(document));
+
+      const wsInput = wsGroup.querySelector('#codex-ws-url');
+      const authInput = authGroup.querySelector('#codex-auth-token');
+      const threadInput = threadGroup.querySelector('#codex-thread-id');
+      const threadPicker = threadPickerGroup.querySelector('#codex-thread-picker');
+      const loadButton = threadPickerGroup.querySelector('#codex-load-threads');
+      const status = threadPickerGroup.querySelector('#codex-thread-status');
+
+      threadPicker.addEventListener('change', () => {
+        if (threadPicker.value) threadInput.value = threadPicker.value;
+      });
+
+      loadButton.addEventListener('click', async () => {
+        loadButton.disabled = true;
+        status.textContent = 'Connecting to Codex app-server...';
+        const client = new CodexAppServerClient({
+          wsURL: (wsInput.value || DEFAULT_WS_URL).trim(),
+          authToken: authInput.value || '',
+          WebSocketImpl: globalThis.WebSocket,
+          timeoutMs: 5000,
+        });
+
+        try {
+          await client.connect();
+          const threads = await client.loadedThreads();
+          replaceThreadPickerOptions(threadPicker, threads, document);
+
+          if (threads.length === 0) {
+            status.textContent = 'No loaded Codex sessions found. Open a Codex session, then load again.';
+          } else if (threads.length === 1) {
+            threadPicker.value = threads[0].id;
+            threadInput.value = threads[0].id;
+            status.textContent = 'Found 1 loaded Codex session and selected it.';
+          } else {
+            status.textContent = `Found ${threads.length} loaded Codex sessions. Select the one to receive Xenocept submissions.`;
+          }
+        } catch (error) {
+          status.textContent = `Could not load Codex sessions: ${error.message || error}`;
+        } finally {
+          client.close();
+          loadButton.disabled = false;
+        }
+      });
     }
 
     validateConfig(pluginConfig) {
@@ -195,6 +256,36 @@ export async function resolveThreadID(client, configuredThreadID) {
   throw new Error(`Multiple loaded Codex threads (${loaded.length}). Configure Thread ID explicitly.`);
 }
 
+export function formatThreadLabel(thread) {
+  const id = thread?.id || '';
+  const title = (thread?.title || thread?.name || '').trim();
+  const cwd = (thread?.cwd || '').trim();
+  const shortID = id.length > 16 ? `${id.slice(0, 8)}...${id.slice(-6)}` : id;
+  if (title && cwd) return `${title} - ${cwd} (${shortID})`;
+  if (title) return `${title} (${shortID})`;
+  if (cwd) return `${cwd} (${shortID})`;
+  return id;
+}
+
+export function replaceThreadPickerOptions(selectEl, threads, doc = document) {
+  while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+
+  if (!Array.isArray(threads) || threads.length === 0) {
+    const opt = doc.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No loaded Codex sessions';
+    selectEl.appendChild(opt);
+    return;
+  }
+
+  for (const thread of threads) {
+    const opt = doc.createElement('option');
+    opt.value = thread.id;
+    opt.textContent = formatThreadLabel(thread);
+    selectEl.appendChild(opt);
+  }
+}
+
 export function buildTurnInput(text) {
   return [{ type: 'text', text: String(text || '') }];
 }
@@ -244,6 +335,32 @@ export class CodexAppServerClient {
       const data = result && Array.isArray(result.data) ? result.data : [];
       return data.filter((id) => typeof id === 'string' && id.length > 0);
     });
+  }
+
+  async loadedThreads() {
+    const ids = await this.loadedThreadIDs();
+    const out = [];
+    for (const id of ids) {
+      try {
+        const result = await this.request('thread/read', {
+          threadId: id,
+          includeTurns: false,
+        });
+        const thread = result && result.thread && typeof result.thread === 'object'
+          ? result.thread
+          : {};
+        out.push({
+          id,
+          title: typeof thread.title === 'string' ? thread.title : '',
+          name: typeof thread.name === 'string' ? thread.name : '',
+          cwd: typeof thread.cwd === 'string' ? thread.cwd : '',
+          status: typeof thread.status === 'string' ? thread.status : '',
+        });
+      } catch (_error) {
+        out.push({ id });
+      }
+    }
+    return out;
   }
 
   startTurn(threadID, text) {

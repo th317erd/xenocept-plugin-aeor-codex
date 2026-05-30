@@ -3,7 +3,9 @@ import {
   CodexAppServerClient,
   buildInjectedUserItems,
   buildTurnInput,
+  formatThreadLabel,
   renderSessionTemplate,
+  replaceThreadPickerOptions,
   resolveThreadID,
 } from '../index.mjs';
 
@@ -47,6 +49,7 @@ class FakeWebSocket {
 FakeWebSocket.responseFor = (msg) => {
   if (msg.method === 'initialize') return { userAgent: 'codex-test', codexHome: '/tmp/codex', platformFamily: 'unix', platformOs: 'linux' };
   if (msg.method === 'thread/loaded/list') return { data: ['thread-1'] };
+  if (msg.method === 'thread/read') return { thread: { id: msg.params.threadId, title: 'Main task', cwd: '/repo' } };
   if (msg.method === 'turn/start') return { turn: { id: 'turn-1' } };
   if (msg.method === 'thread/inject_items') return {};
   return {};
@@ -69,6 +72,47 @@ test('buildInjectedUserItems emits Responses user message shape', () => {
     role: 'user',
     content: [{ type: 'input_text', text: 'ctx' }],
   }]);
+});
+
+test('formatThreadLabel prefers useful metadata', () => {
+  assert.equal(
+    formatThreadLabel({ id: 'thread-1234567890abcdef', title: 'Main task', cwd: '/repo' }),
+    'Main task - /repo (thread-1...abcdef)',
+  );
+  assert.equal(formatThreadLabel({ id: 'thread-1', cwd: '/repo' }), '/repo (thread-1)');
+  assert.equal(formatThreadLabel({ id: 'thread-1' }), 'thread-1');
+});
+
+test('replaceThreadPickerOptions renders empty and loaded states', () => {
+  const options = [];
+  const fakeDoc = {
+    createElement() {
+      const opt = { value: '', textContent: '' };
+      options.push(opt);
+      return opt;
+    },
+  };
+  const selectEl = {
+    firstChild: null,
+    children: [],
+    appendChild(opt) {
+      this.children.push(opt);
+      this.firstChild = this.children[0] || null;
+    },
+    removeChild() {
+      this.children.shift();
+      this.firstChild = this.children[0] || null;
+    },
+  };
+
+  replaceThreadPickerOptions(selectEl, [], fakeDoc);
+  assert.equal(selectEl.children[0].textContent, 'No loaded Codex sessions');
+
+  selectEl.children = [];
+  selectEl.firstChild = null;
+  replaceThreadPickerOptions(selectEl, [{ id: 'thread-1', title: 'Main' }], fakeDoc);
+  assert.equal(selectEl.children[0].value, 'thread-1');
+  assert.equal(selectEl.children[0].textContent, 'Main (thread-1)');
 });
 
 test('renderSessionTemplate returns rendered body', async () => {
@@ -124,9 +168,11 @@ test('CodexAppServerClient initializes and starts a turn', async () => {
   await client.connect();
   const loaded = await client.loadedThreadIDs();
   assert.deepEqual(loaded, ['thread-1']);
+  const threads = await client.loadedThreads();
+  assert.deepEqual(threads, [{ id: 'thread-1', title: 'Main task', name: '', cwd: '/repo', status: '' }]);
   await client.startTurn('thread-1', 'hello');
   const sentMethods = FakeWebSocket.instances[0].sent.map((msg) => msg.method);
-  assert.deepEqual(sentMethods, ['initialize', 'initialized', 'thread/loaded/list', 'turn/start']);
+  assert.deepEqual(sentMethods, ['initialize', 'initialized', 'thread/loaded/list', 'thread/loaded/list', 'thread/read', 'turn/start']);
   client.close();
 });
 

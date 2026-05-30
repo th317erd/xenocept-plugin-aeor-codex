@@ -1,39 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${1:-http://127.0.0.1:9500}"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIRECTORY_ID="xenocept-plugin-aeor-codex"
+SERVER_URL="${1:-http://127.0.0.1:9500}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-payload="$(mktemp)"
-cleanup() {
-  rm -f "$payload"
-}
-trap cleanup EXIT
+INDEX_PATH="${SCRIPT_DIR}/index.mjs"
+PACKAGE_PATH="${SCRIPT_DIR}/package.json"
 
-python3 - "$ROOT" > "$payload" <<'PY'
-import base64
-import json
-import pathlib
-import sys
+for required in "${INDEX_PATH}" "${PACKAGE_PATH}"; do
+  if [[ ! -f "${required}" ]]; then
+    echo "Missing required file: ${required}" >&2
+    exit 1
+  fi
+done
 
-root = pathlib.Path(sys.argv[1])
-files = []
-for name in ("index.mjs", "package.json", "README.md", "LICENSE"):
-    data = (root / name).read_bytes()
-    files.append({
-        "path": name,
-        "content_base64": base64.b64encode(data).decode("ascii"),
-    })
+info="$(curl -fsS "${SERVER_URL}/api/v1/server/info" || true)"
+if [[ -z "${info}" ]]; then
+  echo "Cannot reach xenocept at ${SERVER_URL}. Is it running?" >&2
+  exit 1
+fi
 
-print(json.dumps({
-    "name": "xenocept-plugin-aeor-codex",
-    "files": files,
-}))
-PY
+allow_unsigned="$(echo "${info}" | jq -r '.allowUnsignedPlugins')"
+if [[ "${allow_unsigned}" != "true" ]]; then
+  echo "xenocept at ${SERVER_URL} is NOT running with --unsafe-allow-unsigned-plugins." >&2
+  echo "Restart it as:" >&2
+  echo "  xenocept --dev-mode --unsafe-allow-unsigned-plugins" >&2
+  exit 1
+fi
 
-curl -fsS -X PUT \
+payload_path="$(mktemp)"
+trap 'rm -f "${payload_path}"' EXIT
+
+jq -n \
+  --arg     name      "${DIRECTORY_ID}" \
+  --rawfile index_mjs "${INDEX_PATH}" \
+  --rawfile pkg       "${PACKAGE_PATH}" \
+  '{
+    name: $name,
+    files: {
+      "index.mjs": $index_mjs
+    },
+    package: $pkg
+  }' \
+  > "${payload_path}"
+
+response="$(curl -sS -w '\n%{http_code}' \
+  -X POST "${SERVER_URL}/api/v1/plugins/install-from-source" \
   -H 'Content-Type: application/json' \
-  --data-binary "@$payload" \
-  "$BASE_URL/api/v1/plugins/npm/xenocept-plugin-aeor-codex"
+  --data-binary "@${payload_path}")"
 
-printf '\nInstalled xenocept-plugin-aeor-codex into %s\n' "$BASE_URL"
+status="${response##*$'\n'}"
+body="${response%$'\n'*}"
+
+if [[ "${status}" == "200" ]]; then
+  echo "  OK  HTTP ${status}"
+  echo "  ${body}"
+else
+  echo "  FAIL  HTTP ${status}" >&2
+  echo "  ${body}" >&2
+  exit 1
+fi
