@@ -1,0 +1,36 @@
+{
+  "name": "xenocept-plugin-aeor-codex",
+  "version": "0.1.0",
+  "description": "Xenocept destination plugin for Codex. Sends submitted Xenocept sessions into a running Codex app-server thread.",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "test": "node spec/index-spec.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "xenocept": {
+    "pluginID": "org.aeor.xenocept.codex"
+  },
+  "keywords": [
+    "xenocept",
+    "xenocept-plugin",
+    "plugin",
+    "codex",
+    "openai",
+    "destination"
+  ],
+  "author": "Wyatt Greenway <th317erd@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/th317erd/xenocept-plugin-aeor-codex.git"
+  },
+  "homepage": "https://github.com/th317erd/xenocept-plugin-aeor-codex#readme",
+  "bugs": {
+    "url": "https://github.com/th317erd/xenocept-plugin-aeor-codex/issues"
+  }
+}
