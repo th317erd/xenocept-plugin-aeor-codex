@@ -266,24 +266,30 @@ export async function resolveThreadID(client, configuredThreadID) {
 
 export function formatThreadLabel(thread) {
   const id = thread?.id || '';
-  const title = (thread?.title || thread?.name || thread?.preview || '').trim();
   const cwd = (thread?.cwd || '').trim();
-  const shortID = id.length > 16 ? `${id.slice(0, 8)}...${id.slice(-6)}` : id;
-  if (title && cwd) return `${title} - ${cwd} (${shortID})`;
-  if (title) return `${title} (${shortID})`;
-  if (cwd) return `${cwd} (${shortID})`;
-  return id;
+  return cwd || id;
 }
 
 export function buildThreadOptions(threads, selectedThreadID = '') {
   const options = [];
   const seen = new Set();
+  const labelCounts = new Map();
   const selected = (selectedThreadID || '').trim();
+
+  for (const thread of Array.isArray(threads) ? threads : []) {
+    const label = formatThreadLabel(thread);
+    if (!label) continue;
+    labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+  }
 
   for (const thread of Array.isArray(threads) ? threads : []) {
     if (!thread?.id || seen.has(thread.id)) continue;
     seen.add(thread.id);
-    options.push({ value: thread.id, label: formatThreadLabel(thread) });
+    const label = formatThreadLabel(thread);
+    const disambiguated = labelCounts.get(label) > 1
+      ? `${label} (${shortThreadID(thread.id)})`
+      : label;
+    options.push({ value: thread.id, label: disambiguated });
   }
 
   if (selected && !seen.has(selected)) {
@@ -291,6 +297,11 @@ export function buildThreadOptions(threads, selectedThreadID = '') {
   }
 
   return options;
+}
+
+function shortThreadID(id) {
+  const value = String(id || '');
+  return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
 export function populateThreadSelect(selectEl, threads, selectedThreadID = '') {

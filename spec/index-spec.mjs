@@ -80,12 +80,9 @@ test('buildInjectedUserItems emits Responses user message shape', () => {
   }]);
 });
 
-test('formatThreadLabel prefers useful metadata', () => {
-  assert.equal(
-    formatThreadLabel({ id: 'thread-1234567890abcdef', title: 'Main task', cwd: '/repo' }),
-    'Main task - /repo (thread-1...abcdef)',
-  );
-  assert.equal(formatThreadLabel({ id: 'thread-1', cwd: '/repo' }), '/repo (thread-1)');
+test('formatThreadLabel uses the session working directory', () => {
+  assert.equal(formatThreadLabel({ id: 'thread-1234567890abcdef', title: 'Main task', cwd: '/repo' }), '/repo');
+  assert.equal(formatThreadLabel({ id: 'thread-1', cwd: '/repo' }), '/repo');
   assert.equal(formatThreadLabel({ id: 'thread-1' }), 'thread-1');
 });
 
@@ -98,8 +95,18 @@ test('buildThreadOptions preserves selected manual value and loaded sessions', (
     { id: 'thread-1', title: 'Main' },
     { id: 'thread-2', cwd: '/repo' },
   ], 'thread-1'), [
-    { value: 'thread-1', label: 'Main (thread-1)' },
-    { value: 'thread-2', label: '/repo (thread-2)' },
+    { value: 'thread-1', label: 'thread-1' },
+    { value: 'thread-2', label: '/repo' },
+  ]);
+});
+
+test('buildThreadOptions only adds IDs to duplicate directories', () => {
+  assert.deepEqual(buildThreadOptions([
+    { id: 'thread-1234567890abcdef', cwd: '/repo' },
+    { id: 'thread-fedcba0987654321', cwd: '/repo' },
+  ]), [
+    { value: 'thread-1234567890abcdef', label: '/repo (thread-1...abcdef)' },
+    { value: 'thread-fedcba0987654321', label: '/repo (thread-f...654321)' },
   ]);
 });
 
@@ -113,7 +120,7 @@ test('populateThreadSelect uses aeor-select API and restores selection', () => {
   };
 
   populateThreadSelect(selectEl, [{ id: 'thread-1', title: 'Main' }], 'thread-1');
-  assert.deepEqual(calls[0], [{ value: 'thread-1', label: 'Main (thread-1)' }]);
+  assert.deepEqual(calls[0], [{ value: 'thread-1', label: 'thread-1' }]);
   assert.equal(selectEl.value, 'thread-1');
 });
 
