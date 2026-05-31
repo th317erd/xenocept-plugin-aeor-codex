@@ -4,6 +4,7 @@ import {
   buildThreadOptions,
   buildInjectedUserItems,
   buildTurnInput,
+  createThreadRefreshHandler,
   explainConnectionFailure,
   formatThreadLabel,
   loadCodexThreads,
@@ -149,6 +150,63 @@ test('renderSessionTemplate falls back on server error', async () => {
   });
   const rendered = await renderSessionTemplate(fetchFn, 'raw template', 'session-1', { warn() {} });
   assert.equal(rendered, 'raw template');
+});
+
+test('createThreadRefreshHandler loads sessions and selects the only session', async () => {
+  const statuses = [];
+  const options = [];
+  let selected = '';
+  const selectEl = {
+    setOptions(next) {
+      options.push(next);
+    },
+    set value(next) {
+      selected = next;
+    },
+  };
+
+  const refresh = createThreadRefreshHandler({
+    getWsURL: () => 'ws://127.0.0.1:14521',
+    fetchFn: async () => ({
+      ok: true,
+      json: async () => ({ threads: [{ id: 'thread-a', cwd: '/repo' }] }),
+    }),
+    selectEl,
+    getSelectedThreadID: () => selected,
+    setSelectedThreadID: (threadID) => { selected = threadID; },
+    setStatus: (message) => statuses.push(message),
+    log: { warn() {} },
+  });
+
+  await refresh();
+  assert.deepEqual(options[0], [{ value: 'thread-a', label: '/repo' }]);
+  assert.equal(selected, 'thread-a');
+  assert.equal(statuses.at(-1), 'Found 1 Codex session and selected it.');
+});
+
+test('createThreadRefreshHandler ignores concurrent refreshes', async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const refresh = createThreadRefreshHandler({
+    getWsURL: () => 'ws://127.0.0.1:14521',
+    fetchFn: async () => {
+      calls += 1;
+      await gate;
+      return { ok: true, json: async () => ({ threads: [] }) };
+    },
+    selectEl: { setOptions() {} },
+    getSelectedThreadID: () => '',
+    setSelectedThreadID() {},
+    setStatus() {},
+    log: { warn() {} },
+  });
+
+  const first = refresh();
+  const second = refresh();
+  release();
+  await Promise.all([first, second]);
+  assert.equal(calls, 1);
 });
 
 test('loadCodexThreads calls the Xenocept Codex bridge', async () => {

@@ -38,7 +38,7 @@ export function setup(context) {
     static targetsCodingAgent = true;
 
     renderConfigUI(container, currentConfig) {
-      const { div, label, input, textarea, button, span, code } = context.elements;
+      const { div, label, input, textarea, span, code } = context.elements;
       const config = currentConfig || {};
       const mode = config.mode || 'turn';
 
@@ -80,9 +80,8 @@ export function setup(context) {
 
       const threadPickerGroup = div.class('form-group')(
         label.class('form-label').for('codex-thread-picker')('Codex Session'),
-        button.class('secondary').type('button').id('codex-load-threads')('Load Codex sessions'),
         div.class('form-hint').id('codex-thread-status')(
-          'Type a thread ID and press Enter, or load sessions from a running Codex app-server.',
+          'Type a thread ID and press Enter, or open the list to refresh Codex sessions.',
         ),
       ).build(document);
 
@@ -90,7 +89,7 @@ export function setup(context) {
       threadSelect.id = 'codex-thread-picker';
       threadSelect.setAttribute('creatable', '');
       threadSelect.setAttribute('placeholder', 'Type a thread ID and press Enter...');
-      threadPickerGroup.insertBefore(threadSelect, threadPickerGroup.querySelector('#codex-load-threads'));
+      threadPickerGroup.insertBefore(threadSelect, threadPickerGroup.querySelector('#codex-thread-status'));
 
       const threadHidden = document.createElement('input');
       threadHidden.type = 'hidden';
@@ -117,7 +116,6 @@ export function setup(context) {
       ).build(document));
 
       const wsInput = wsGroup.querySelector('#codex-ws-url');
-      const loadButton = threadPickerGroup.querySelector('#codex-load-threads');
       const status = threadPickerGroup.querySelector('#codex-thread-status');
       const initialThreadID = (config.threadID || '').trim();
 
@@ -132,37 +130,24 @@ export function setup(context) {
         syncThreadHidden();
       });
 
-      const loadThreads = async () => {
-        loadButton.disabled = true;
-        loadButton.textContent = 'Loading Codex sessions...';
-        status.textContent = 'Connecting to Codex app-server...';
+      const loadThreads = createThreadRefreshHandler({
+        getWsURL: () => (wsInput.value || DEFAULT_WS_URL).trim(),
+        fetchFn: context.fetch,
+        selectEl: threadSelect,
+        getSelectedThreadID: () => threadHidden.value,
+        setSelectedThreadID: (threadID) => {
+          threadSelect.value = threadID || '';
+          syncThreadHidden();
+        },
+        setStatus: (message) => {
+          status.textContent = message;
+        },
+        log,
+      });
 
-        try {
-          const threads = await loadCodexThreads(context.fetch, (wsInput.value || DEFAULT_WS_URL).trim());
-          populateThreadSelect(threadSelect, threads, threadHidden.value);
-
-          if (threads.length === 0) {
-            status.textContent = 'Connected, but no Codex sessions were found in app-server history.';
-          } else if (threads.length === 1) {
-            threadSelect.value = threads[0].id;
-            syncThreadHidden();
-            status.textContent = 'Found 1 loaded Codex session and selected it.';
-          } else {
-            if (threadHidden.value) threadSelect.value = threadHidden.value;
-            syncThreadHidden();
-            status.textContent = `Found ${threads.length} loaded Codex sessions. Select the one to receive Xenocept submissions.`;
-          }
-        } catch (error) {
-          const detail = explainConnectionFailure(error);
-          status.textContent = detail;
-          log?.warn?.('Could not load Codex sessions:', error);
-        } finally {
-          loadButton.textContent = 'Load Codex sessions';
-          loadButton.disabled = false;
-        }
-      };
-
-      loadButton.addEventListener('click', loadThreads);
+      threadSelect.addEventListener('open', () => {
+        loadThreads().catch(() => { /* status is updated in loadThreads */ });
+      });
       loadThreads().catch(() => { /* status is updated in loadThreads */ });
     }
 
@@ -224,6 +209,45 @@ export async function renderSessionTemplate(fetchFn, template, sessionID, log = 
 
   const json = await response.json();
   return json && typeof json.rendered === 'string' ? json.rendered : '';
+}
+
+export function createThreadRefreshHandler({
+  getWsURL,
+  fetchFn,
+  selectEl,
+  getSelectedThreadID,
+  setSelectedThreadID,
+  setStatus,
+  log = console,
+}) {
+  let loading = false;
+
+  return async function refreshCodexThreads() {
+    if (loading) return;
+    loading = true;
+    setStatus?.('Connecting to Codex app-server...');
+
+    try {
+      const threads = await loadCodexThreads(fetchFn, getWsURL());
+      const selected = getSelectedThreadID?.() || '';
+      populateThreadSelect(selectEl, threads, selected);
+
+      if (threads.length === 0) {
+        setStatus?.('Connected, but no Codex sessions were found in app-server history.');
+      } else if (threads.length === 1) {
+        setSelectedThreadID?.(threads[0].id);
+        setStatus?.('Found 1 Codex session and selected it.');
+      } else {
+        if (selected) setSelectedThreadID?.(selected);
+        setStatus?.(`Found ${threads.length} Codex sessions. Select the one to receive Xenocept submissions.`);
+      }
+    } catch (error) {
+      setStatus?.(explainConnectionFailure(error));
+      log?.warn?.('Could not load Codex sessions:', error);
+    } finally {
+      loading = false;
+    }
+  };
 }
 
 export async function loadCodexThreads(fetchFn, wsURL) {
