@@ -2,19 +2,19 @@
   "payload": {
     "manifestVersion": 2,
     "pluginId": "org.aeor.xenocept.codex",
-    "issuedAt": "2026-06-01T21:00:39.519466832+00:00",
+    "issuedAt": "2026-06-01T22:52:37.440898930+00:00",
     "keyId": "aeor-202605132323",
     "files": [
       {
         "path": "index.mjs",
-        "hash": "4735c03d49c5b632880c50d07289b42ed87245c6b84ab9adb319ae6385db6120"
+        "hash": "3b3c371504586befefe9931dfbb2c5dbe66bad39c90b87844615f2288dc5b663"
       },
       {
         "path": "main.lua",
-        "hash": "ac737ef6ee25da1944141f93e43afa650108917d9a37fa010840dac39109af10"
+        "hash": "c7aeca21a891dded38e14ce5a0f4fbcb35953046287ce0caa8947c3a7bb0fbe1"
       }
     ],
     "subprocessEntry": "main.lua"
   },
-  "signature": "56yo4S+ATnJDp8cAXLCScEVQXFmRthmdKo2SyLq3tSbtYbdlwfFLUoO7sxrfMGyaq0SnkAPir4Y4tQYYOf5EBg=="
+  "signature": "KbpfCOxRCORiETTjLGAiWDJxLBjzzTumWALM5NSgr4hZKgALNrip0gg5RxHj/h4zdfiRodAOvRrgbk4Smbc6AA=="
 }

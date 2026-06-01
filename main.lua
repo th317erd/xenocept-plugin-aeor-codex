@@ -75,6 +75,34 @@ local function list_threads(request)
   return { threads = threads }
 end
 
+local function normalize_model(model)
+  local id = text_or_empty(model.id)
+  if id == "" then id = text_or_empty(model.slug) end
+  return {
+    id = id,
+    label = text_or_empty(model.displayName or model.display_name or model.name or id),
+    hidden = model.hidden == true,
+  }
+end
+
+local function list_models(request)
+  local client = connect_codex(request.wsURL or DEFAULT_WS_URL)
+  local result = rpc_result(client:request("model/list", { includeHidden = false }), "model/list")
+  local models = {}
+  local data = type(result.models) == "table" and result.models or result.data
+  if type(data) == "table" then
+    for _, model in ipairs(data) do
+      if type(model) == "table" then
+        local normalized = normalize_model(model)
+        if normalized.id ~= "" and not normalized.hidden then
+          table.insert(models, normalized)
+        end
+      end
+    end
+  end
+  return { models = models }
+end
+
 local function resolve_thread_id(client, configured_thread_id)
   local explicit = text_or_empty(configured_thread_id):match("^%s*(.-)%s*$")
   if explicit ~= "" then return explicit end
@@ -132,12 +160,17 @@ local function send_to_codex(request)
       },
     }), "thread/inject_items")
   else
-    rpc_result(client:request("turn/start", {
+    local params = {
       threadId = thread_id,
       input = {
         { type = "text", text = content },
       },
-    }), "turn/start")
+    }
+    local model = text_or_empty(request.model):match("^%s*(.-)%s*$")
+    if model ~= "" then
+      params.model = model
+    end
+    rpc_result(client:request("turn/start", params), "turn/start")
   end
 
   return { threadID = thread_id, mode = mode }
@@ -176,6 +209,8 @@ local function handle_request(event)
   local ok, result = pcall(function()
     if request.action == "list_threads" then
       return list_threads(request)
+    elseif request.action == "list_models" then
+      return list_models(request)
     elseif request.action == "send" then
       return send_to_codex(request)
     else
