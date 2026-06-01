@@ -10,6 +10,7 @@
   "files": [
     "index.mjs",
     "main.lua",
+    ".xenocept-sig",
     "README.md",
     "LICENSE"
   ],
