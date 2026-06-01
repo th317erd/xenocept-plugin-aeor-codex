@@ -9,6 +9,7 @@ import {
   formatThreadLabel,
   loadCodexThreads,
   populateThreadSelect,
+  requestCodexBridge,
   renderSessionTemplate,
   resolveThreadID,
   sendToCodex,
@@ -66,6 +67,67 @@ const tests = [];
 
 function test(name, fn) {
   tests.push({ name, fn });
+}
+
+function createBridgeHarness(resultForRequest) {
+  const sent = [];
+  const sources = new Map();
+
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.listeners = new Map();
+      sources.set(url, this);
+      queueMicrotask(() => this.onopen?.());
+    }
+
+    addEventListener(type, fn) {
+      this.listeners.set(type, fn);
+    }
+
+    emit(type, data) {
+      this.listeners.get(type)?.({ data });
+    }
+
+    close() {
+      this.closed = true;
+    }
+  }
+
+  const fetchFn = async (url, options = {}) => {
+    sent.push({ url, options });
+    if (url === '/api/v1/channels/list') {
+      return { ok: true, json: async () => ['xenocept-codex-control'] };
+    }
+    if (url === '/api/v1/processes') {
+      return { ok: true, json: async () => [] };
+    }
+    if (url === '/api/v1/channels/send') {
+      const body = JSON.parse(options.body);
+      const request = JSON.parse(body.content);
+      let ok = true;
+      let result;
+      try {
+        result = resultForRequest(request);
+      } catch (error) {
+        ok = false;
+        result = error?.message || String(error);
+      }
+      const source = sources.get(`/api/v1/channels/events?name=${encodeURIComponent(request.replyChannel)}`);
+      queueMicrotask(() => {
+        source?.emit('message', JSON.stringify({
+          content: JSON.stringify(ok
+            ? { id: request.id, ok: true, result }
+            : { id: request.id, ok: false, error: result }),
+          meta: {},
+        }));
+      });
+      return { ok: true, json: async () => ({ delivered: body.names, missing: [] }) };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  return { fetchFn, FakeEventSource, sent };
 }
 
 test('buildTurnInput emits Codex text input shape', () => {
@@ -165,12 +227,16 @@ test('createThreadRefreshHandler loads sessions and selects the only session', a
     },
   };
 
+  const { fetchFn, FakeEventSource } = createBridgeHarness((request) => {
+    assert.equal(request.action, 'list_threads');
+    return { threads: [{ id: 'thread-a', cwd: '/repo' }] };
+  });
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = FakeEventSource;
+
   const refresh = createThreadRefreshHandler({
     getWsURL: () => 'ws://127.0.0.1:14521',
-    fetchFn: async () => ({
-      ok: true,
-      json: async () => ({ threads: [{ id: 'thread-a', cwd: '/repo' }] }),
-    }),
+    fetchFn,
     selectEl,
     getSelectedThreadID: () => selected,
     setSelectedThreadID: (threadID) => { selected = threadID; },
@@ -178,22 +244,30 @@ test('createThreadRefreshHandler loads sessions and selects the only session', a
     log: { warn() {} },
   });
 
-  await refresh();
-  assert.deepEqual(options[0], [{ value: 'thread-a', label: '/repo' }]);
-  assert.equal(selected, 'thread-a');
-  assert.equal(statuses.at(-1), 'Found 1 Codex session and selected it.');
+  try {
+    await refresh();
+    assert.deepEqual(options[0], [{ value: 'thread-a', label: '/repo' }]);
+    assert.equal(selected, 'thread-a');
+    assert.equal(statuses.at(-1), 'Found 1 Codex session and selected it.');
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
 });
 
 test('createThreadRefreshHandler ignores concurrent refreshes', async () => {
   let calls = 0;
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
+  const { fetchFn, FakeEventSource } = createBridgeHarness(() => ({ threads: [] }));
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = FakeEventSource;
+
   const refresh = createThreadRefreshHandler({
     getWsURL: () => 'ws://127.0.0.1:14521',
-    fetchFn: async () => {
+    fetchFn: async (url, options) => {
       calls += 1;
-      await gate;
-      return { ok: true, json: async () => ({ threads: [] }) };
+      if (url === '/api/v1/channels/send') await gate;
+      return fetchFn(url, options);
     },
     selectEl: { setOptions() {} },
     getSelectedThreadID: () => '',
@@ -202,64 +276,77 @@ test('createThreadRefreshHandler ignores concurrent refreshes', async () => {
     log: { warn() {} },
   });
 
-  const first = refresh();
-  const second = refresh();
-  release();
-  await Promise.all([first, second]);
-  assert.equal(calls, 1);
+  try {
+    const first = refresh();
+    const second = refresh();
+    release();
+    await Promise.all([first, second]);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
 });
 
-test('loadCodexThreads calls the Xenocept Codex bridge', async () => {
-  const fetchFn = async (url, options) => {
-    assert.equal(url, '/api/v1/codex/app-server/threads');
-    assert.equal(options.method, 'POST');
-    assert.equal(JSON.parse(options.body).wsURL, 'ws://127.0.0.1:14521');
-    return {
-      ok: true,
-      json: async () => ({ threads: [{ id: 'thread-a', preview: 'Task' }] }),
-    };
-  };
+test('loadCodexThreads asks the Lua Codex bridge to list sessions', async () => {
+  const { fetchFn, FakeEventSource } = createBridgeHarness((request) => {
+    assert.equal(request.action, 'list_threads');
+    assert.equal(request.wsURL, 'ws://127.0.0.1:14521');
+    return { threads: [{ id: 'thread-a', preview: 'Task' }] };
+  });
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = FakeEventSource;
 
-  assert.deepEqual(await loadCodexThreads(fetchFn, 'ws://127.0.0.1:14521'), [
-    { id: 'thread-a', preview: 'Task' },
-  ]);
+  try {
+    assert.deepEqual(await loadCodexThreads(fetchFn, 'ws://127.0.0.1:14521'), [
+      { id: 'thread-a', preview: 'Task' },
+    ]);
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
 });
 
 test('loadCodexThreads surfaces bridge failures', async () => {
-  const fetchFn = async () => ({
-    ok: false,
-    status: 502,
-    text: async () => 'connect to Codex app-server: failed',
+  const { fetchFn, FakeEventSource } = createBridgeHarness((_request) => {
+    throw new Error('connect to Codex app-server: failed');
   });
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = FakeEventSource;
 
-  await assert.rejects(
-    () => loadCodexThreads(fetchFn, 'ws://127.0.0.1:14521'),
-    /connect to Codex app-server/,
-  );
+  try {
+    await assert.rejects(
+      () => requestCodexBridge(fetchFn, { action: 'list_threads' }, {
+        requestID: 'fixed',
+        timeoutMs: 1000,
+      }),
+      /connect to Codex app-server/,
+    );
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
 });
 
-test('sendToCodex posts content to the Xenocept Codex bridge', async () => {
-  const fetchFn = async (url, options) => {
-    assert.equal(url, '/api/v1/codex/app-server/send');
-    assert.equal(options.method, 'POST');
-    assert.deepEqual(JSON.parse(options.body), {
+test('sendToCodex asks the Lua Codex bridge to deliver content', async () => {
+  const { fetchFn, FakeEventSource } = createBridgeHarness((request) => {
+    assert.equal(request.action, 'send');
+    assert.equal(request.wsURL, 'ws://127.0.0.1:14521');
+    assert.equal(request.threadID, 'thread-a');
+    assert.equal(request.mode, 'turn');
+    assert.equal(request.content, 'hello');
+    return { threadID: 'thread-a', mode: 'turn' };
+  });
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = FakeEventSource;
+
+  try {
+    assert.deepEqual(await sendToCodex(fetchFn, {
       wsURL: 'ws://127.0.0.1:14521',
       threadID: 'thread-a',
       mode: 'turn',
       content: 'hello',
-    });
-    return {
-      ok: true,
-      json: async () => ({ threadID: 'thread-a', mode: 'turn' }),
-    };
-  };
-
-  assert.deepEqual(await sendToCodex(fetchFn, {
-    wsURL: 'ws://127.0.0.1:14521',
-    threadID: 'thread-a',
-    mode: 'turn',
-    content: 'hello',
-  }), { threadID: 'thread-a', mode: 'turn' });
+    }), { threadID: 'thread-a', mode: 'turn' });
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
 });
 
 test('resolveThreadID uses explicit configured thread', async () => {

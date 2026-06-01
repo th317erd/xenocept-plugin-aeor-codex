@@ -2,13 +2,13 @@
 
 Xenocept destination plugin for Codex. When you submit a Xenocept
 session, this plugin renders the canonical session template and sends it
-to a running Codex app-server thread.
+to a running Codex app-server thread through the plugin's Lua bridge.
 
 ## Requirements
 
 - Xenocept running locally.
 - Codex app-server listening on a WebSocket URL reachable from the
-  Xenocept webview.
+  Xenocept host process.
 
 For local testing:
 
@@ -26,12 +26,12 @@ route.
 
 ## Delivery Modes
 
-### Start turn
+### Send
 
 Default. Sends the Xenocept session as a new user turn with
 `turn/start`, so Codex reacts immediately in the selected thread.
 
-### Inject context
+### Queue
 
 Advanced. Appends a raw user message to model-visible thread history
 with `thread/inject_items`. Codex will see it on a later turn, but it
@@ -39,9 +39,10 @@ does not start work by itself.
 
 ## Thread Selection
 
-The config dialog loads recent Codex threads from the running app-server
-with `thread/list`. When a Xenocept session is sent, the plugin resumes
-the selected thread with `thread/resume` before starting the turn.
+The config dialog starts the plugin bridge if needed, then asks that Lua
+bridge to load recent Codex threads from the running app-server with
+`thread/list`. When a Xenocept session is sent, the Lua bridge resumes
+the selected thread with `thread/resume` before sending or queueing.
 
 If no thread is selected, the plugin asks Codex for available threads:
 
@@ -60,8 +61,9 @@ for one repo lands in another.
 ./dev-install.sh
 ```
 
-That `PUT`s `index.mjs` and `package.json` into Xenocept's plugin store.
-Reload Xenocept, then add a destination under Settings -> Destinations.
+That side-loads `index.mjs`, `main.lua`, and `package.json` into
+Xenocept's plugin store. Reload Xenocept, then add a destination under
+Settings -> Destinations.
 
 ## License
 

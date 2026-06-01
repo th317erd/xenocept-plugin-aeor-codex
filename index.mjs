@@ -2,6 +2,8 @@
 
 const PLUGIN_ID = 'org.aeor.xenocept.codex';
 const DEFAULT_WS_URL = 'ws://127.0.0.1:14521';
+const CONTROL_CHANNEL = 'xenocept-codex-control';
+const BRIDGE_MODE = 'xenocept-codex-bridge';
 const DEFAULT_TEMPLATE = `A Xenocept screen-annotation session was submitted for Codex.
 
 Please acknowledge that you received it, inspect the session details below, and help with whatever the comments or screen context call out.
@@ -251,29 +253,159 @@ export function createThreadRefreshHandler({
 }
 
 export async function loadCodexThreads(fetchFn, wsURL) {
-  const response = await fetchFn('/api/v1/codex/app-server/threads', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ wsURL: wsURL || DEFAULT_WS_URL }),
+  const json = await requestCodexBridge(fetchFn, {
+    action: 'list_threads',
+    wsURL: wsURL || DEFAULT_WS_URL,
   });
-  return parseCodexBridgeResponse(response, 'Could not load Codex sessions').then((json) => {
-    return Array.isArray(json.threads) ? json.threads : [];
-  });
+  return Array.isArray(json.threads) ? json.threads : [];
 }
 
 export async function sendToCodex(fetchFn, payload) {
-  const response = await fetchFn('/api/v1/codex/app-server/send', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(payload || {}),
+  return requestCodexBridge(fetchFn, {
+    action: 'send',
+    ...(payload || {}),
   });
-  return parseCodexBridgeResponse(response, 'Could not send session to Codex');
 }
 
-async function parseCodexBridgeResponse(response, fallback) {
-  if (response.ok) return response.json();
-  const body = await response.text().catch(() => '');
-  throw new Error(body || `${fallback}: HTTP ${response.status}`);
+export async function requestCodexBridge(fetchFn, payload, deps = {}) {
+  const requestID = deps.requestID || createRequestID();
+  const replyChannel = deps.replyChannel || `xenocept-codex-reply-${requestID}`;
+  const controlChannel = deps.controlChannel || CONTROL_CHANNEL;
+  const timeoutMs = deps.timeoutMs || 10000;
+  const openEventSource = deps.openEventSource || ((url) => new EventSource(url));
+
+  await ensureCodexBridge(fetchFn, deps);
+
+  return new Promise((resolve, reject) => {
+    const events = openEventSource(`/api/v1/channels/events?name=${encodeURIComponent(replyChannel)}`);
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish();
+      reject(new Error('Timed out waiting for Codex plugin bridge response'));
+    }, timeoutMs);
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { events.close(); } catch (_) { /* ignore */ }
+    };
+
+    events.addEventListener('message', (event) => {
+      let envelope;
+      try {
+        envelope = JSON.parse(event.data || '{}');
+      } catch (_error) {
+        return;
+      }
+      let body;
+      try {
+        body = JSON.parse(envelope.content || '{}');
+      } catch (_error) {
+        return;
+      }
+      if (body.id !== requestID) return;
+      finish();
+      if (body.ok === false) {
+        reject(new Error(body.error || 'Codex plugin bridge failed'));
+      } else {
+        resolve(body.result || {});
+      }
+    });
+
+    events.onerror = () => {
+      finish();
+      reject(new Error('Lost connection to Codex plugin bridge reply channel'));
+    };
+
+    events.onopen = () => {
+      send().catch((error) => {
+        finish();
+        reject(error);
+      });
+    };
+
+    const send = async () => {
+      await postJSON(fetchFn, '/api/v1/channels/send', {
+        names: [controlChannel],
+        content: JSON.stringify({
+          id: requestID,
+          replyChannel,
+          ...(payload || {}),
+        }),
+        meta: { pluginID: PLUGIN_ID },
+      });
+    };
+  });
+}
+
+export async function ensureCodexBridge(fetchFn, deps = {}) {
+  const controlChannel = deps.controlChannel || CONTROL_CHANNEL;
+  const bridgeMode = deps.bridgeMode || BRIDGE_MODE;
+  const pollMs = deps.pollMs || 150;
+  const attempts = deps.attempts || 20;
+
+  if (await channelExists(fetchFn, controlChannel)) return;
+
+  const processes = await fetchJSON(fetchFn, '/api/v1/processes');
+  const bridgeRunning = Array.isArray(processes) && processes.some((process) => (
+    process?.kind === 'generic' && process?.mode === bridgeMode
+  ));
+
+  if (!bridgeRunning) {
+    const info = await fetchJSON(fetchFn, '/api/v1/server/info');
+    const executablePath = info?.executablePath;
+    if (!executablePath) throw new Error('Xenocept server did not report executablePath');
+    await postJSON(fetchFn, '/api/v1/processes/generic/spawn', {
+      mode: bridgeMode,
+      argv: [
+        executablePath,
+        `plugin://${PLUGIN_ID}/bridge?channel=${encodeURIComponent(controlChannel)}`,
+      ],
+    });
+  }
+
+  for (let i = 0; i < attempts; i += 1) {
+    if (await channelExists(fetchFn, controlChannel)) return;
+    await sleep(pollMs);
+  }
+  throw new Error('Codex plugin bridge did not register its control channel');
+}
+
+async function channelExists(fetchFn, channel) {
+  const names = await fetchJSON(fetchFn, '/api/v1/channels/list');
+  return Array.isArray(names) && names.includes(channel);
+}
+
+async function fetchJSON(fetchFn, url) {
+  const response = await fetchFn(url);
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(body || `${url}: HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+async function postJSON(fetchFn, url, body) {
+  const response = await fetchFn(url, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body || {}),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `${url}: HTTP ${response.status}`);
+  }
+  return response.json().catch(() => ({}));
+}
+
+function createRequestID() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function resolveThreadID(client, configuredThreadID) {
@@ -561,5 +693,7 @@ function templateReference() {
 export const __test = {
   DEFAULT_TEMPLATE,
   DEFAULT_WS_URL,
+  CONTROL_CHANNEL,
+  BRIDGE_MODE,
   templateReference,
 };

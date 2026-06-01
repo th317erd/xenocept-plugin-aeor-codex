@@ -9,11 +9,13 @@
   },
   "files": [
     "index.mjs",
+    "main.lua",
     "README.md",
     "LICENSE"
   ],
   "xenocept": {
-    "pluginID": "org.aeor.xenocept.codex"
+    "pluginID": "org.aeor.xenocept.codex",
+    "subprocessEntry": "main.lua"
   },
   "keywords": [
     "xenocept",

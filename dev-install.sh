@@ -6,9 +6,10 @@ SERVER_URL="${1:-http://127.0.0.1:9500}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INDEX_PATH="${SCRIPT_DIR}/index.mjs"
+LUA_PATH="${SCRIPT_DIR}/main.lua"
 PACKAGE_PATH="${SCRIPT_DIR}/package.json"
 
-for required in "${INDEX_PATH}" "${PACKAGE_PATH}"; do
+for required in "${INDEX_PATH}" "${LUA_PATH}" "${PACKAGE_PATH}"; do
   if [[ ! -f "${required}" ]]; then
     echo "Missing required file: ${required}" >&2
     exit 1
@@ -35,11 +36,13 @@ trap 'rm -f "${payload_path}"' EXIT
 jq -n \
   --arg     name      "${DIRECTORY_ID}" \
   --rawfile index_mjs "${INDEX_PATH}" \
+  --rawfile main_lua  "${LUA_PATH}" \
   --rawfile pkg       "${PACKAGE_PATH}" \
   '{
     name: $name,
     files: {
-      "index.mjs": $index_mjs
+      "index.mjs": $index_mjs,
+      "main.lua": $main_lua
     },
     package: $pkg
   }' \
