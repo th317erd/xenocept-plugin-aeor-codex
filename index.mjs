@@ -47,15 +47,15 @@ export function setup(context) {
         div.class('destination-mode-toggle')(
           label.class('destination-mode-option')(
             input.type('radio').name('mode').value('turn')(),
-            span(' Start turn'),
+            span(' Send'),
           ),
           label.class('destination-mode-option')(
             input.type('radio').name('mode').value('inject')(),
-            span(' Inject context'),
+            span(' Queue'),
           ),
         ),
         div.class('form-hint')(
-          'Start turn makes Codex respond immediately. Inject context only appends model-visible history for a later turn.',
+          'Send makes Codex respond immediately. Queue adds the session as context for a later turn.',
         ),
       ).build(document);
       const turnRadio = modeGroup.querySelector('input[value="turn"]');
