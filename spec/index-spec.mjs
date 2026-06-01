@@ -5,6 +5,7 @@ import {
   buildInjectedUserItems,
   buildTurnInput,
   createThreadRefreshHandler,
+  handleCodexAutoSend,
   explainConnectionFailure,
   formatThreadLabel,
   loadCodexThreads,
@@ -344,6 +345,135 @@ test('sendToCodex asks the Lua Codex bridge to deliver content', async () => {
       mode: 'turn',
       content: 'hello',
     }), { threadID: 'thread-a', mode: 'turn' });
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
+});
+
+test('handleCodexAutoSend ignores disabled auto-send', async () => {
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(url);
+    if (url === '/api/v1/auto-send') {
+      return { ok: true, json: async () => ({ enabled: false, destinationIDs: ['dest-codex'] }) };
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  assert.deepEqual(await handleCodexAutoSend({
+    fetchFn,
+    sessionID: 'session-1',
+    log: { error() {} },
+  }), { sent: 0, failed: 0, skipped: 0 });
+  assert.deepEqual(calls, ['/api/v1/auto-send']);
+});
+
+test('handleCodexAutoSend delivers selected Codex destinations', async () => {
+  const delivered = [];
+  const { fetchFn: bridgeFetch, FakeEventSource } = createBridgeHarness((request) => {
+    assert.equal(request.action, 'send');
+    delivered.push(request);
+    return { threadID: request.threadID, mode: request.mode };
+  });
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = FakeEventSource;
+
+  const fetchFn = async (url, options = {}) => {
+    if (url === '/api/v1/auto-send') {
+      return { ok: true, json: async () => ({ enabled: true, destinationIDs: ['dest-codex', 'dest-file'] }) };
+    }
+    if (url === '/api/v1/destinations') {
+      return {
+        ok: true,
+        json: async () => [
+          {
+            id: 'dest-codex',
+            enabled: true,
+            pluginID: 'org.aeor.xenocept.codex.destination',
+            pluginConfig: {
+              mode: 'inject',
+              threadID: 'thread-a',
+              wsURL: 'ws://127.0.0.1:14521',
+              template: 'Session {{ sessionID }}',
+            },
+          },
+          {
+            id: 'dest-file',
+            enabled: true,
+            pluginID: 'org.aeor.xenocept.file',
+            pluginConfig: {},
+          },
+        ],
+      };
+    }
+    if (url === '/api/v1/template/render') {
+      assert.equal(JSON.parse(options.body).session_id, 'session-1');
+      return { ok: true, json: async () => ({ rendered: 'rendered session' }) };
+    }
+    return bridgeFetch(url, options);
+  };
+
+  try {
+    assert.deepEqual(await handleCodexAutoSend({
+      fetchFn,
+      sessionID: 'session-1',
+      log: { error() {} },
+    }), { sent: 1, failed: 0, skipped: 0 });
+    assert.equal(delivered.length, 1);
+    assert.equal(delivered[0].threadID, 'thread-a');
+    assert.equal(delivered[0].mode, 'inject');
+    assert.equal(delivered[0].content, 'rendered session');
+  } finally {
+    globalThis.EventSource = prevEventSource;
+  }
+});
+
+test('handleCodexAutoSend skips duplicate session destination deliveries', async () => {
+  const deliveredKeys = new Set();
+  let sends = 0;
+  const { fetchFn: bridgeFetch, FakeEventSource } = createBridgeHarness((request) => {
+    assert.equal(request.action, 'send');
+    sends += 1;
+    return { threadID: request.threadID, mode: request.mode };
+  });
+  const prevEventSource = globalThis.EventSource;
+  globalThis.EventSource = FakeEventSource;
+
+  const fetchFn = async (url, options = {}) => {
+    if (url === '/api/v1/auto-send') {
+      return { ok: true, json: async () => ({ enabled: true, destinationIDs: ['dest-codex'] }) };
+    }
+    if (url === '/api/v1/destinations') {
+      return {
+        ok: true,
+        json: async () => [{
+          id: 'dest-codex',
+          enabled: true,
+          pluginID: 'org.aeor.xenocept.codex.destination',
+          pluginConfig: { threadID: 'thread-a' },
+        }],
+      };
+    }
+    if (url === '/api/v1/template/render') {
+      return { ok: true, json: async () => ({ rendered: 'rendered session' }) };
+    }
+    return bridgeFetch(url, options);
+  };
+
+  try {
+    assert.deepEqual(await handleCodexAutoSend({
+      fetchFn,
+      sessionID: 'session-1',
+      deliveredKeys,
+      log: { error() {} },
+    }), { sent: 1, failed: 0, skipped: 0 });
+    assert.deepEqual(await handleCodexAutoSend({
+      fetchFn,
+      sessionID: 'session-1',
+      deliveredKeys,
+      log: { error() {} },
+    }), { sent: 0, failed: 0, skipped: 1 });
+    assert.equal(sends, 1);
   } finally {
     globalThis.EventSource = prevEventSource;
   }

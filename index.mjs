@@ -1,9 +1,12 @@
 'use strict';
 
 const PLUGIN_ID = 'org.aeor.xenocept.codex';
+const DESTINATION_ID = 'org.aeor.xenocept.codex.destination';
 const DEFAULT_WS_URL = 'ws://127.0.0.1:14521';
 const CONTROL_CHANNEL = 'xenocept-codex-control';
 const BRIDGE_MODE = 'xenocept-codex-bridge';
+const deliveredAutoSendKeys = new Set();
+let autoSendListenerRegistered = false;
 const DEFAULT_TEMPLATE = `A Xenocept screen-annotation session was submitted for Codex.
 
 Please acknowledge that you received it, inspect the session details below, and help with whatever the comments or screen context call out.
@@ -25,6 +28,7 @@ Screenshot URL: {{ screenshotURL }}`;
 
 export function setup(context) {
   const { register, registerDestination, log } = context;
+  const fetchFn = typeof context.fetch === 'function' ? context.fetch : fetch;
 
   register(class CodexPlugin extends context.Plugin {
     static pluginID    = PLUGIN_ID;
@@ -33,8 +37,24 @@ export function setup(context) {
     static description = 'Send Xenocept sessions into a running Codex app-server thread.';
   });
 
+  if (!autoSendListenerRegistered) {
+    autoSendListenerRegistered = true;
+    context.on?.('submit-done-processing', async ({ sessionID } = {}) => {
+      try {
+        await handleCodexAutoSend({
+          fetchFn,
+          sessionID,
+          deliveredKeys: deliveredAutoSendKeys,
+          log,
+        });
+      } catch (error) {
+        log?.error?.('Codex auto-send failed:', error);
+      }
+    });
+  }
+
   registerDestination(class CodexDestination extends context.Destination {
-    static destinationID = 'org.aeor.xenocept.codex.destination';
+    static destinationID = DESTINATION_ID;
     static name          = 'Codex';
     static description   = 'Deliver sessions to Codex via app-server remote control';
     static targetsCodingAgent = true;
@@ -174,17 +194,8 @@ export function setup(context) {
       const sessionID = session.id;
       if (!sessionID) throw new Error('Session is missing id');
 
-      const fetchFn = typeof context.fetch === 'function' ? context.fetch : fetch;
-      const template = pluginConfig.template || DEFAULT_TEMPLATE;
-      const rendered = await renderSessionTemplate(fetchFn, template, sessionID, log);
-
       try {
-        const result = await sendToCodex(fetchFn, {
-          wsURL: pluginConfig.wsURL || DEFAULT_WS_URL,
-          threadID: pluginConfig.threadID || '',
-          mode: pluginConfig.mode === 'inject' ? 'inject' : 'turn',
-          content: rendered,
-        });
+        const result = await deliverCodexSession(fetchFn, sessionID, pluginConfig, log);
         return { success: true, threadID: result.threadID, mode: result.mode };
       } catch (error) {
         const { log: deliveryLog } = deliveryContext || {};
@@ -193,6 +204,73 @@ export function setup(context) {
         throw error;
       }
     }
+  });
+}
+
+export async function handleCodexAutoSend({
+  fetchFn,
+  sessionID,
+  deliveredKeys = new Set(),
+  log = console,
+}) {
+  if (!sessionID) return { sent: 0, failed: 0, skipped: 0 };
+
+  const autoSend = await fetchJSON(fetchFn, '/api/v1/auto-send');
+  if (!autoSend?.enabled) return { sent: 0, failed: 0, skipped: 0 };
+
+  const autoDestinationIDs = new Set(Array.isArray(autoSend.destinationIDs)
+    ? autoSend.destinationIDs
+    : []);
+  if (autoDestinationIDs.size === 0) return { sent: 0, failed: 0, skipped: 0 };
+
+  const destinations = await fetchJSON(fetchFn, '/api/v1/destinations');
+  const codexDestinations = Array.isArray(destinations)
+    ? destinations.filter((destination) => (
+      destination
+      && destination.enabled !== false
+      && destination.pluginID === DESTINATION_ID
+      && autoDestinationIDs.has(destination.id)
+    ))
+    : [];
+
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  for (const destination of codexDestinations) {
+    const key = `${sessionID}:${destination.id}`;
+    if (deliveredKeys.has(key)) {
+      skipped += 1;
+      continue;
+    }
+
+    deliveredKeys.add(key);
+    try {
+      await deliverCodexSession(fetchFn, sessionID, destination.pluginConfig || {}, log);
+      sent += 1;
+    } catch (error) {
+      deliveredKeys.delete(key);
+      failed += 1;
+      log?.error?.(`Codex auto-send failed for destination ${destination.id}:`, error);
+    }
+  }
+
+  if (sent || failed || skipped) {
+    log?.info?.(`Codex auto-send session=${sessionID} sent=${sent} failed=${failed} skipped=${skipped}`);
+  }
+
+  return { sent, failed, skipped };
+}
+
+export async function deliverCodexSession(fetchFn, sessionID, pluginConfig = {}, log = console) {
+  const template = pluginConfig.template || DEFAULT_TEMPLATE;
+  const rendered = await renderSessionTemplate(fetchFn, template, sessionID, log);
+
+  return sendToCodex(fetchFn, {
+    wsURL: pluginConfig.wsURL || DEFAULT_WS_URL,
+    threadID: pluginConfig.threadID || '',
+    mode: pluginConfig.mode === 'inject' ? 'inject' : 'turn',
+    content: rendered,
   });
 }
 
