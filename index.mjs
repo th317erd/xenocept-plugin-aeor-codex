@@ -3,15 +3,6 @@
 const PLUGIN_ID = 'org.aeor.xenocept.codex';
 const DESTINATION_ID = 'org.aeor.xenocept.codex.destination';
 const DEFAULT_WS_URL = 'ws://127.0.0.1:14521';
-const DEFAULT_MODEL = 'gpt-5.5';
-const FALLBACK_MODELS = [
-  { id: 'gpt-5.5',             label: 'GPT-5.5' },
-  { id: 'gpt-5.4',             label: 'GPT-5.4' },
-  { id: 'gpt-5.4-mini',        label: 'GPT-5.4-Mini' },
-  { id: 'gpt-5.3-codex',       label: 'GPT-5.3-Codex' },
-  { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark' },
-  { id: 'gpt-5.2',             label: 'GPT-5.2' },
-];
 const CONTROL_CHANNEL = 'xenocept-codex-control';
 const BRIDGE_MODE = 'xenocept-codex-bridge';
 const deliveredAutoSendKeys = new Set();
@@ -72,7 +63,6 @@ export function setup(context) {
       const { div, label, input, textarea, span, code } = context.elements;
       const config = currentConfig || {};
       const mode = config.mode || 'turn';
-      const model = (config.model || DEFAULT_MODEL).trim();
 
       const modeGroup = div.class('form-group')(
         label.class('form-label')('Delivery Mode'),
@@ -109,21 +99,6 @@ export function setup(context) {
         ),
       ).build(document);
       container.appendChild(wsGroup);
-
-      const modelPickerGroup = div.class('form-group')(
-        label.class('form-label').for('codex-model-picker')('Model'),
-        div.class('form-hint').id('codex-model-status')(
-          'Open the list to refresh available Codex models from app-server.',
-        ),
-      ).build(document);
-
-      const modelSelect = document.createElement('select');
-      modelSelect.id = 'codex-model-picker';
-      modelSelect.name = 'model';
-      modelSelect.className = 'form-input';
-      modelPickerGroup.insertBefore(modelSelect, modelPickerGroup.querySelector('#codex-model-status'));
-
-      container.appendChild(modelPickerGroup);
 
       const threadPickerGroup = div.class('form-group')(
         label.class('form-label').for('codex-thread-picker')('Codex Session'),
@@ -163,12 +138,9 @@ export function setup(context) {
       ).build(document));
 
       const wsInput = wsGroup.querySelector('#codex-ws-url');
-      const modelStatus = modelPickerGroup.querySelector('#codex-model-status');
       const status = threadPickerGroup.querySelector('#codex-thread-status');
       const initialThreadID = (config.threadID || '').trim();
 
-      populateModelSelect(modelSelect, FALLBACK_MODELS, model);
-      modelSelect.value = model;
       populateThreadSelect(threadSelect, [], initialThreadID);
       if (initialThreadID) threadSelect.value = initialThreadID;
 
@@ -195,28 +167,6 @@ export function setup(context) {
         log,
       });
 
-      const loadModels = createModelRefreshHandler({
-        getWsURL: () => (wsInput.value || DEFAULT_WS_URL).trim(),
-        fetchFn: context.fetch,
-        selectEl: modelSelect,
-        getSelectedModel: () => modelSelect.value,
-        setSelectedModel: (nextModel) => {
-          modelSelect.value = nextModel || DEFAULT_MODEL;
-        },
-        setStatus: (message) => {
-          modelStatus.textContent = message;
-        },
-        log,
-      });
-
-      modelSelect.addEventListener('focus', () => {
-        loadModels().catch(() => { /* status is updated in loadModels */ });
-      });
-      modelSelect.addEventListener('pointerdown', () => {
-        loadModels().catch(() => { /* status is updated in loadModels */ });
-      });
-      loadModels().catch(() => { /* status is updated in loadModels */ });
-
       threadSelect.addEventListener('open', () => {
         loadThreads().catch(() => { /* status is updated in loadThreads */ });
       });
@@ -225,7 +175,6 @@ export function setup(context) {
 
     validateConfig(pluginConfig) {
       pluginConfig.mode = pluginConfig.mode === 'inject' ? 'inject' : 'turn';
-      pluginConfig.model = (pluginConfig.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
 
       const wsURL = (pluginConfig.wsURL || '').trim();
       if (!wsURL) return { valid: false, error: 'Codex WebSocket URL is required' };
@@ -321,7 +270,6 @@ export async function deliverCodexSession(fetchFn, sessionID, pluginConfig = {},
     wsURL: pluginConfig.wsURL || DEFAULT_WS_URL,
     threadID: pluginConfig.threadID || '',
     mode: pluginConfig.mode === 'inject' ? 'inject' : 'turn',
-    model: pluginConfig.model || DEFAULT_MODEL,
     content: rendered,
   });
 }
@@ -388,51 +336,6 @@ export async function loadCodexThreads(fetchFn, wsURL) {
     wsURL: wsURL || DEFAULT_WS_URL,
   });
   return Array.isArray(json.threads) ? json.threads : [];
-}
-
-export function createModelRefreshHandler({
-  getWsURL,
-  fetchFn,
-  selectEl,
-  getSelectedModel,
-  setSelectedModel,
-  setStatus,
-  log = console,
-}) {
-  let loading = false;
-
-  return async function refreshCodexModels() {
-    if (loading) return;
-    loading = true;
-    setStatus?.('Connecting to Codex app-server...');
-
-    try {
-      const models = await loadCodexModels(fetchFn, getWsURL());
-      const selected = getSelectedModel?.() || DEFAULT_MODEL;
-      populateModelSelect(selectEl, models, selected);
-
-      if (models.length === 0) {
-        setStatus?.('No Codex models reported; using the built-in fallback list.');
-      } else {
-        setSelectedModel?.(selected);
-        setStatus?.(`Found ${models.length} Codex models.`);
-      }
-    } catch (error) {
-      populateModelSelect(selectEl, FALLBACK_MODELS, getSelectedModel?.() || DEFAULT_MODEL);
-      setStatus?.(`Could not refresh Codex models; using fallback list. ${explainConnectionFailure(error)}`);
-      log?.warn?.('Could not load Codex models:', error);
-    } finally {
-      loading = false;
-    }
-  };
-}
-
-export async function loadCodexModels(fetchFn, wsURL) {
-  const json = await requestCodexBridge(fetchFn, {
-    action: 'list_models',
-    wsURL: wsURL || DEFAULT_WS_URL,
-  });
-  return Array.isArray(json.models) ? json.models : [];
 }
 
 export async function sendToCodex(fetchFn, payload) {
@@ -640,50 +543,6 @@ export function populateThreadSelect(selectEl, threads, selectedThreadID = '') {
   selectEl.setOptions(options);
   if (selectedThreadID && options.some((opt) => opt.value === selectedThreadID)) {
     selectEl.value = selectedThreadID;
-  }
-}
-
-export function buildModelOptions(models, selectedModel = '') {
-  const options = [];
-  const seen = new Set();
-  const source = Array.isArray(models) && models.length > 0 ? models : FALLBACK_MODELS;
-  const selected = (selectedModel || DEFAULT_MODEL).trim();
-
-  for (const model of source) {
-    const id = String(model?.id || model?.slug || '').trim();
-    if (!id || seen.has(id)) continue;
-    if (model.hidden) continue;
-    seen.add(id);
-    options.push({
-      value: id,
-      label: String(model?.label || model?.displayName || model?.display_name || id),
-    });
-  }
-
-  if (selected && !seen.has(selected)) {
-    options.unshift({ value: selected, label: selected });
-  }
-
-  return options;
-}
-
-export function populateModelSelect(selectEl, models, selectedModel = '') {
-  const options = buildModelOptions(models, selectedModel);
-  if (typeof selectEl.setOptions === 'function') {
-    selectEl.setOptions(options);
-  } else {
-    while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
-    const doc = selectEl.ownerDocument || document;
-    for (const opt of options) {
-      const optionEl = doc.createElement('option');
-      optionEl.value = opt.value;
-      optionEl.textContent = opt.label;
-      selectEl.appendChild(optionEl);
-    }
-  }
-  const selected = (selectedModel || DEFAULT_MODEL).trim();
-  if (selected && options.some((opt) => opt.value === selected)) {
-    selectEl.value = selected;
   }
 }
 

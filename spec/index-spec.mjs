@@ -1,18 +1,14 @@
 import assert from 'node:assert/strict';
 import {
   CodexAppServerClient,
-  buildModelOptions,
   buildThreadOptions,
   buildInjectedUserItems,
   buildTurnInput,
-  createModelRefreshHandler,
   createThreadRefreshHandler,
   handleCodexAutoSend,
   explainConnectionFailure,
   formatThreadLabel,
-  loadCodexModels,
   loadCodexThreads,
-  populateModelSelect,
   populateThreadSelect,
   requestCodexBridge,
   renderSessionTemplate,
@@ -146,64 +142,6 @@ test('buildInjectedUserItems emits Responses user message shape', () => {
     role: 'user',
     content: [{ type: 'input_text', text: 'ctx' }],
   }]);
-});
-
-test('buildModelOptions uses visible Codex models and preserves saved selection', () => {
-  assert.deepEqual(buildModelOptions([
-    { id: 'gpt-5.5', label: 'GPT-5.5' },
-    { slug: 'gpt-hidden', display_name: 'Hidden', hidden: true },
-    { slug: 'gpt-5.4', display_name: 'GPT-5.4' },
-  ], 'gpt-custom'), [
-    { value: 'gpt-custom', label: 'gpt-custom' },
-    { value: 'gpt-5.5', label: 'GPT-5.5' },
-    { value: 'gpt-5.4', label: 'GPT-5.4' },
-  ]);
-});
-
-test('populateModelSelect uses aeor-select API and restores selection', () => {
-  const calls = [];
-  const selectEl = {
-    value: '',
-    setOptions(options) {
-      calls.push(options);
-    },
-  };
-
-  populateModelSelect(selectEl, [{ id: 'gpt-5.5', label: 'GPT-5.5' }], 'gpt-5.5');
-
-  assert.deepEqual(calls[0], [{ value: 'gpt-5.5', label: 'GPT-5.5' }]);
-  assert.equal(selectEl.value, 'gpt-5.5');
-});
-
-test('populateModelSelect fills native select options', () => {
-  const children = [];
-  const selectEl = {
-    firstChild: null,
-    ownerDocument: {
-      createElement(tag) {
-        assert.equal(tag, 'option');
-        return { value: '', textContent: '' };
-      },
-    },
-    appendChild(child) {
-      children.push(child);
-      this.firstChild = null;
-    },
-    removeChild() {
-      throw new Error('should not remove without children');
-    },
-  };
-
-  populateModelSelect(selectEl, [
-    { id: 'gpt-5.5', label: 'GPT-5.5' },
-    { id: 'gpt-5.4', label: 'GPT-5.4' },
-  ], 'gpt-5.4');
-
-  assert.deepEqual(children, [
-    { value: 'gpt-5.5', textContent: 'GPT-5.5' },
-    { value: 'gpt-5.4', textContent: 'GPT-5.4' },
-  ]);
-  assert.equal(selectEl.value, 'gpt-5.4');
 });
 
 test('formatThreadLabel uses the session working directory', () => {
@@ -368,72 +306,6 @@ test('loadCodexThreads asks the Lua Codex bridge to list sessions', async () => 
   }
 });
 
-test('loadCodexModels asks the Lua Codex bridge to list models', async () => {
-  const { fetchFn, FakeEventSource } = createBridgeHarness((request) => {
-    assert.equal(request.action, 'list_models');
-    assert.equal(request.wsURL, 'ws://127.0.0.1:14521');
-    return { models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }] };
-  });
-  const prevEventSource = globalThis.EventSource;
-  globalThis.EventSource = FakeEventSource;
-
-  try {
-    assert.deepEqual(await loadCodexModels(fetchFn, 'ws://127.0.0.1:14521'), [
-      { id: 'gpt-5.5', label: 'GPT-5.5' },
-    ]);
-  } finally {
-    globalThis.EventSource = prevEventSource;
-  }
-});
-
-test('createModelRefreshHandler loads models and keeps selection', async () => {
-  const statuses = [];
-  const options = [];
-  let selected = 'gpt-5.4';
-  const selectEl = {
-    setOptions(next) {
-      options.push(next);
-    },
-    set value(next) {
-      selected = next;
-    },
-  };
-
-  const { fetchFn, FakeEventSource } = createBridgeHarness((request) => {
-    assert.equal(request.action, 'list_models');
-    return {
-      models: [
-        { id: 'gpt-5.5', label: 'GPT-5.5' },
-        { id: 'gpt-5.4', label: 'GPT-5.4' },
-      ],
-    };
-  });
-  const prevEventSource = globalThis.EventSource;
-  globalThis.EventSource = FakeEventSource;
-
-  const refresh = createModelRefreshHandler({
-    getWsURL: () => 'ws://127.0.0.1:14521',
-    fetchFn,
-    selectEl,
-    getSelectedModel: () => selected,
-    setSelectedModel: (model) => { selected = model; },
-    setStatus: (message) => statuses.push(message),
-    log: { warn() {} },
-  });
-
-  try {
-    await refresh();
-    assert.deepEqual(options[0], [
-      { value: 'gpt-5.5', label: 'GPT-5.5' },
-      { value: 'gpt-5.4', label: 'GPT-5.4' },
-    ]);
-    assert.equal(selected, 'gpt-5.4');
-    assert.equal(statuses.at(-1), 'Found 2 Codex models.');
-  } finally {
-    globalThis.EventSource = prevEventSource;
-  }
-});
-
 test('loadCodexThreads surfaces bridge failures', async () => {
   const { fetchFn, FakeEventSource } = createBridgeHarness((_request) => {
     throw new Error('connect to Codex app-server: failed');
@@ -460,7 +332,6 @@ test('sendToCodex asks the Lua Codex bridge to deliver content', async () => {
     assert.equal(request.wsURL, 'ws://127.0.0.1:14521');
     assert.equal(request.threadID, 'thread-a');
     assert.equal(request.mode, 'turn');
-    assert.equal(request.model, 'gpt-5.5');
     assert.equal(request.content, 'hello');
     return { threadID: 'thread-a', mode: 'turn' };
   });
@@ -472,7 +343,6 @@ test('sendToCodex asks the Lua Codex bridge to deliver content', async () => {
       wsURL: 'ws://127.0.0.1:14521',
       threadID: 'thread-a',
       mode: 'turn',
-      model: 'gpt-5.5',
       content: 'hello',
     }), { threadID: 'thread-a', mode: 'turn' });
   } finally {
@@ -522,7 +392,6 @@ test('handleCodexAutoSend delivers selected Codex destinations', async () => {
             pluginID: 'org.aeor.xenocept.codex.destination',
             pluginConfig: {
               mode: 'inject',
-              model: 'gpt-5.4',
               threadID: 'thread-a',
               wsURL: 'ws://127.0.0.1:14521',
               template: 'Session {{ sessionID }}',
@@ -553,7 +422,6 @@ test('handleCodexAutoSend delivers selected Codex destinations', async () => {
     assert.equal(delivered.length, 1);
     assert.equal(delivered[0].threadID, 'thread-a');
     assert.equal(delivered[0].mode, 'inject');
-    assert.equal(delivered[0].model, 'gpt-5.4');
     assert.equal(delivered[0].content, 'rendered session');
   } finally {
     globalThis.EventSource = prevEventSource;
