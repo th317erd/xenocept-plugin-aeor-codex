@@ -5,6 +5,24 @@ const DESTINATION_ID = 'org.aeor.xenocept.codex.destination';
 const DEFAULT_WS_URL = 'ws://127.0.0.1:14521';
 const CONTROL_CHANNEL = 'xenocept-codex-control';
 const BRIDGE_MODE = 'xenocept-codex-bridge';
+const DIRECTORY_ID = 'xenocept-plugin-aeor-codex';
+const DEFAULT_OCR_MODEL = 'gpt-5.4-mini';
+const DEFAULT_OCR_TIMEOUT_SECONDS = 60;
+const KNOWN_OCR_MODELS = [
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+  'gpt-5.4',
+  'gpt-5.5',
+];
+const OCR_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    ocr_text:                { type: 'string' },
+    alternative_description: { type: 'string' },
+  },
+  required: ['ocr_text', 'alternative_description'],
+  additionalProperties: false,
+};
 const deliveredAutoSendKeys = new Set();
 let autoSendListenerRegistered = false;
 const DEFAULT_TEMPLATE = `A Xenocept screen-annotation session was submitted for Codex.
@@ -26,15 +44,229 @@ User comments:
 
 Screenshot URL: {{ screenshotURL }}`;
 
+const OCR_PROMPT = [
+  'You will analyze a screen capture and produce a JSON object with exactly two string fields.',
+  '',
+  '"ocr_text":',
+  '  Transcribe ALL visible text in the image: every word, label, button text, menu item,',
+  '  filename, URL, code, error message, tooltip, watermark, and anything literal.',
+  '  Concatenate everything into one block of text in natural reading order',
+  '  (top-to-bottom, left-to-right; group by logical region: window, panel, dialog).',
+  '  Preserve casing and punctuation. Use newlines between distinct regions for clarity.',
+  '  Do NOT include descriptions, formatting, or markdown. Just the literal text.',
+  '  If the image contains no readable text, return an empty string.',
+  '',
+  '"alternative_description":',
+  '  Describe the image in dense, analytical detail. The output is used for full-text indexing,',
+  '  so optimize for SEARCH RECALL: concrete nouns, identifiable applications, named UI',
+  '  elements, recognizable objects, file types, languages, frameworks, brand names.',
+  '  Specifically include, when visible:',
+  '    - The application/program/website (for example Visual Studio Code, Slack, Firefox showing',
+  '      github.com, macOS Finder, or GIMP image editor). Identify it specifically; if',
+  '      uncertain, give your best guess and a runner-up.',
+  '    - The window/panel layout (sidebar, tabs, modal, toolbar, status bar).',
+  '    - Domain content: code language, repo/file paths, document type, chart type, app screen.',
+  '    - Imagery: name objects/people/scenes if photos are present.',
+  '    - Theme colors only if distinctive (dark vs light, dominant accent color).',
+  '  Do NOT use storytelling language, mood adjectives, or aesthetic commentary.',
+  '  Be exhaustive on facts, terse on prose. Multiple sentences are fine; bullet points are not.',
+  '',
+  'Respond with strict JSON: { "ocr_text": "...", "alternative_description": "..." }.',
+  'No markdown fences, no commentary outside the JSON.',
+].join('\n');
+
 export function setup(context) {
   const { register, registerDestination, log } = context;
   const fetchFn = typeof context.fetch === 'function' ? context.fetch : fetch;
+  const elements = context.elements;
+  const aeorCheckbox = elements['aeor-checkbox'];
 
   register(class CodexPlugin extends context.Plugin {
     static pluginID    = PLUGIN_ID;
     static name        = 'Codex';
     static version     = '0.1.0';
-    static description = 'Send Xenocept sessions into a running Codex app-server thread.';
+    static description = 'Send Xenocept sessions into a running Codex app-server thread, and optionally run OpenAI vision OCR for screenshot enrichment.';
+    static role        = 'ocr';
+
+    constructor(ctx) {
+      super(ctx);
+      this._inflight = 0;
+      this._maxInflight = 1;
+    }
+
+    async renderConfigUI(container, currentConfig) {
+      const { div, label, input, p, code, option } = context.elements;
+      const aeorSelect = context.elements['aeor-select'];
+      const cfg = currentConfig || {};
+      const ocrEnabled = cfg.ocr_enabled === true;
+      const apiKeyValue = cfg.ocr_api_key || '';
+      const modelValue = (cfg.ocr_model || DEFAULT_OCR_MODEL).trim();
+      const modelOptions = KNOWN_OCR_MODELS.includes(modelValue)
+        ? KNOWN_OCR_MODELS
+        : [modelValue, ...KNOWN_OCR_MODELS];
+      const timeoutSeconds = normalizeOcrTimeoutSeconds(cfg.ocr_timeout_seconds);
+
+      let enabledCheckbox = aeorCheckbox.name('ocr_enabled').id('codex-ocr-enabled');
+      if (ocrEnabled) enabledCheckbox = enabledCheckbox.checked('');
+      container.appendChild(div.class('form-group')(
+        enabledCheckbox('Enable Codex OCR'),
+        div.class('settings-hint')(
+          'When enabled, every new session screenshot is sent to the OpenAI Responses API.',
+          ' The result is written back as ', code('ocr_text'), ' and ',
+          code('alternative_description'), ' for Xenocept search.',
+        ),
+      ).build(document));
+
+      container.appendChild(div.class('form-group')(
+        label.class('form-label').for('codex-ocr-api-key')('OpenAI API key'),
+        input.class('form-input')
+          .type('password')
+          .id('codex-ocr-api-key')
+          .name('ocr_api_key')
+          .placeholder('sk-...')
+          .value(apiKeyValue)(),
+        div.class('settings-hint')(
+          'Stored in Xenocept\'s local database; transmitted only to ', code('api.openai.com'),
+          '. The Codex destination can still use app-server, but OCR does not require the Codex CLI.',
+        ),
+      ).build(document));
+
+      container.appendChild(div.class('form-group')(
+        label.class('form-label').for('codex-ocr-model')('Vision model'),
+        aeorSelect
+          .id('codex-ocr-model')
+          .name('ocr_model')
+          .placeholder(DEFAULT_OCR_MODEL)
+          .value(modelValue)(
+            ...modelOptions.map((model) => option.value(model)(model)),
+          ),
+        div.class('settings-hint')(
+          'Default ', code(DEFAULT_OCR_MODEL), ' balances cost and latency for per-screenshot OCR.',
+          ' Use ', code('gpt-5.5'), ' when accuracy on dense screenshots matters more than cost.',
+        ),
+      ).build(document));
+
+      container.appendChild(div.class('form-group')(
+        label.class('form-label').for('codex-ocr-timeout')('OCR timeout'),
+        input.class('form-input')
+          .type('number')
+          .id('codex-ocr-timeout')
+          .name('ocr_timeout_seconds')
+          .min('15')
+          .max('300')
+          .step('5')
+          .value(String(timeoutSeconds))(),
+        div.class('settings-hint')(
+          'Seconds to wait for OpenAI before falling through to the next OCR plugin.',
+        ),
+      ).build(document));
+
+      container.appendChild(p.class('plugin-marketplace-notice')(
+        'OCR is opt-in. Costs accrue to your OpenAI account at the selected model\'s rate. API requests use store=false.',
+      ).build(document));
+
+      await this._renderOcrMasterControl(container);
+    }
+
+    async _renderOcrMasterControl(container) {
+      const { div } = context.elements;
+      const aeorConfirmButton = context.elements['aeor-confirm-button'];
+      const aeorInfoBox = context.elements['aeor-info-box'];
+
+      let currentMasterID = null;
+      try { currentMasterID = await context.getOcrMaster?.(); } catch { /* ignore */ }
+      const amMaster = currentMasterID === DIRECTORY_ID;
+
+      let confirmBtn = aeorConfirmButton
+        .label(amMaster ? 'OCR master (current)' : 'Hold to make OCR master')
+        .confirmedText('Now OCR master ✓')
+        .ariaLabel(amMaster
+          ? 'This plugin is already the OCR master'
+          : 'Hold to make Codex the OCR master');
+      if (amMaster) {
+        confirmBtn = confirmBtn.disabled('');
+      } else {
+        confirmBtn = confirmBtn.onConfirm(async () => {
+          try {
+            await context.setOcrMaster(DIRECTORY_ID);
+            log?.info?.('promoted to OCR master');
+          } catch (error) {
+            log?.warn?.('failed to promote to OCR master:', error);
+          }
+        });
+      }
+
+      container.appendChild(div.class('form-group')(
+        confirmBtn(),
+        aeorInfoBox.kind(amMaster ? 'success' : 'info')(
+          amMaster
+            ? 'This plugin is the current OCR master. It runs first on every session; other OCR plugins are slaves and only run if it fails. To swap, open another OCR plugin\'s Configure page and hold its master button.'
+            : 'OCR runs in a master/slave chain. The master tries first on every session; if it returns no result or fails, the loader falls through to slaves in install order. Hold the button above to make this plugin the master.',
+        ),
+      ).build(document));
+    }
+
+    async _loadConfig() {
+      const reqOpts = { referrer: import.meta.url };
+      try {
+        const r = await fetch(`/api/v1/plugins/npm/${encodeURIComponent(DIRECTORY_ID)}/config`, reqOpts);
+        if (r.ok) return await r.json();
+
+        const fallback = await fetch(`/api/v1/plugins/npm/${encodeURIComponent(PLUGIN_ID)}/config`, reqOpts);
+        return fallback.ok ? await fallback.json() : {};
+      } catch (error) {
+        log?.warn?.('failed to read Codex plugin config:', error);
+        return {};
+      }
+    }
+
+    async onOcr({ sessionID }) {
+      if (!sessionID) return null;
+      if (this._inflight >= this._maxInflight) {
+        log?.info?.('skipping — another Codex OCR call is already in flight');
+        return null;
+      }
+
+      const config = await this._loadConfig();
+      if (config.ocr_enabled !== true) return null;
+
+      const apiKey = (config.ocr_api_key || '').trim();
+      if (!apiKey) return null;
+
+      try {
+        const r = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionID)}/meta`, {
+          referrer: import.meta.url,
+        });
+        if (r.ok) {
+          const meta = await r.json();
+          const existing = typeof meta?.alternative_description === 'string'
+            ? meta.alternative_description.trim()
+            : '';
+          if (existing.length > 0) {
+            log?.info?.(`skipping — session ${sessionID} already has alternative_description`);
+            return null;
+          }
+        }
+      } catch (error) {
+        log?.warn?.('alt-description idempotency check failed:', error);
+      }
+
+      this._inflight += 1;
+      try {
+        const { ocrText, altDescription } = await extractOpenAIOcr(fetchFn, sessionID, config, log);
+        if (!ocrText && !altDescription) return null;
+        return {
+          ocr_text:                ocrText,
+          alternative_description: altDescription,
+        };
+      } finally {
+        this._inflight -= 1;
+      }
+    }
+
+    async preferredOcrPhase() {
+      return 'processing';
+    }
   });
 
   if (!autoSendListenerRegistered) {
@@ -274,6 +506,123 @@ export async function deliverCodexSession(fetchFn, sessionID, pluginConfig = {},
   });
 }
 
+export async function extractOpenAIOcr(fetchFn, sessionID, pluginConfig = {}, log = console) {
+  const apiKey = (pluginConfig.ocr_api_key || '').trim();
+  if (!apiKey) return { ocrText: '', altDescription: '' };
+
+  const imageURL = `/api/v1/sessions/${encodeURIComponent(sessionID)}/files/screenshot.png`;
+  const imageResponse = await fetchFn(imageURL);
+  if (!imageResponse.ok) throw new Error(`screenshot ${imageResponse.status}`);
+
+  const bytes = new Uint8Array(await imageResponse.arrayBuffer());
+  const body = buildOpenAIOcrRequest({
+    model: pluginConfig.ocr_model || DEFAULT_OCR_MODEL,
+    imageBase64: bytesToBase64(bytes),
+  });
+  const timeoutMs = normalizeOcrTimeoutSeconds(pluginConfig.ocr_timeout_seconds) * 1000;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method:  'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify(body),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      throw new Error(`openai ${response.status}: ${errorBody.slice(0, 300)}`);
+    }
+
+    const json = await response.json();
+    return parseOpenAIOcrResponse(json);
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`openai OCR timed out after ${timeoutMs / 1000}s`);
+    }
+    log?.warn?.('OpenAI OCR failed:', error);
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function buildOpenAIOcrRequest({ model, imageBase64 }) {
+  return {
+    model: String(model || DEFAULT_OCR_MODEL).trim() || DEFAULT_OCR_MODEL,
+    store: false,
+    max_output_tokens: 8192,
+    input: [{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: OCR_PROMPT },
+        {
+          type: 'input_image',
+          image_url: `data:image/png;base64,${imageBase64 || ''}`,
+        },
+      ],
+    }],
+    text: {
+      format: {
+        type:   'json_schema',
+        name:   'xenocept_ocr_result',
+        strict: true,
+        schema: OCR_RESPONSE_SCHEMA,
+      },
+    },
+  };
+}
+
+export function parseOpenAIOcrResponse(json) {
+  const rawText = extractResponseOutputText(json).trim();
+  if (!rawText) return { ocrText: '', altDescription: '' };
+
+  const cleaned = rawText
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```\s*$/, '');
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (_error) {
+    throw new Error(`openai returned non-JSON: ${cleaned.slice(0, 200)}`);
+  }
+
+  return {
+    ocrText:        typeof parsed.ocr_text === 'string' ? parsed.ocr_text : '',
+    altDescription: typeof parsed.alternative_description === 'string'
+      ? parsed.alternative_description
+      : '',
+  };
+}
+
+export function extractResponseOutputText(json) {
+  if (typeof json?.output_text === 'string') return json.output_text;
+
+  const chunks = [];
+  for (const item of Array.isArray(json?.output) ? json.output : []) {
+    if (!item || item.type !== 'message' || !Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (!part || typeof part !== 'object') continue;
+      if (typeof part.text === 'string') chunks.push(part.text);
+      else if (typeof part.output_text === 'string') chunks.push(part.output_text);
+    }
+  }
+  return chunks.join('');
+}
+
+export function normalizeOcrTimeoutSeconds(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_OCR_TIMEOUT_SECONDS;
+  return Math.max(15, Math.min(300, Math.round(parsed)));
+}
+
 export async function renderSessionTemplate(fetchFn, template, sessionID, log = console) {
   const response = await fetchFn('/api/v1/template/render', {
     method:  'POST',
@@ -484,6 +833,15 @@ function createRequestID() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 export async function resolveThreadID(client, configuredThreadID) {
@@ -770,8 +1128,10 @@ function templateReference() {
 
 export const __test = {
   DEFAULT_TEMPLATE,
+  DEFAULT_OCR_MODEL,
   DEFAULT_WS_URL,
   CONTROL_CHANNEL,
   BRIDGE_MODE,
+  OCR_RESPONSE_SCHEMA,
   templateReference,
 };

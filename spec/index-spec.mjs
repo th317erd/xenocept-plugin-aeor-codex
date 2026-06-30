@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import {
   CodexAppServerClient,
+  buildOpenAIOcrRequest,
   buildThreadOptions,
   buildInjectedUserItems,
   buildTurnInput,
   createThreadRefreshHandler,
+  extractResponseOutputText,
   handleCodexAutoSend,
   explainConnectionFailure,
   formatThreadLabel,
   loadCodexThreads,
+  normalizeOcrTimeoutSeconds,
+  parseOpenAIOcrResponse,
   populateThreadSelect,
   requestCodexBridge,
   renderSessionTemplate,
@@ -142,6 +146,52 @@ test('buildInjectedUserItems emits Responses user message shape', () => {
     role: 'user',
     content: [{ type: 'input_text', text: 'ctx' }],
   }]);
+});
+
+test('buildOpenAIOcrRequest emits Responses vision request shape', () => {
+  const request = buildOpenAIOcrRequest({
+    model: 'gpt-5.4-mini',
+    imageBase64: 'abc123',
+  });
+  assert.equal(request.model, 'gpt-5.4-mini');
+  assert.equal(request.store, false);
+  assert.equal(request.input[0].content[0].type, 'input_text');
+  assert.deepEqual(request.input[0].content[1], {
+    type: 'input_image',
+    image_url: 'data:image/png;base64,abc123',
+  });
+  assert.equal(request.text.format.type, 'json_schema');
+  assert.equal(request.text.format.schema.required.includes('ocr_text'), true);
+});
+
+test('parseOpenAIOcrResponse reads output_text JSON payload', () => {
+  assert.deepEqual(parseOpenAIOcrResponse({
+    output_text: JSON.stringify({
+      ocr_text: 'Visible text',
+      alternative_description: 'Dark terminal window.',
+    }),
+  }), {
+    ocrText: 'Visible text',
+    altDescription: 'Dark terminal window.',
+  });
+});
+
+test('extractResponseOutputText falls back to output message content', () => {
+  assert.equal(extractResponseOutputText({
+    output: [{
+      type: 'message',
+      content: [
+        { type: 'output_text', text: '{"ocr_text":"' },
+        { type: 'output_text', text: 'hello"}' },
+      ],
+    }],
+  }), '{"ocr_text":"hello"}');
+});
+
+test('normalizeOcrTimeoutSeconds clamps to supported range', () => {
+  assert.equal(normalizeOcrTimeoutSeconds('5'), 15);
+  assert.equal(normalizeOcrTimeoutSeconds('999'), 300);
+  assert.equal(normalizeOcrTimeoutSeconds('42'), 42);
 });
 
 test('formatThreadLabel uses the session working directory', () => {

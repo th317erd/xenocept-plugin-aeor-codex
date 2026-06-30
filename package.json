@@ -1,7 +1,7 @@
 {
   "name": "xenocept-plugin-aeor-codex",
   "version": "0.1.0",
-  "description": "Xenocept destination plugin for Codex. Sends submitted Xenocept sessions into a running Codex app-server thread.",
+  "description": "Xenocept Codex plugin. Sends submitted sessions into Codex app-server and can run OpenAI vision OCR for screenshot enrichment.",
   "type": "module",
   "main": "index.mjs",
   "scripts": {
@@ -24,6 +24,8 @@
     "plugin",
     "codex",
     "openai",
+    "ocr",
+    "vision",
     "destination"
   ],
   "author": "Wyatt Greenway <th317erd@gmail.com>",

@@ -1,14 +1,18 @@
 # xenocept-plugin-aeor-codex
 
-Xenocept destination plugin for Codex. When you submit a Xenocept
-session, this plugin renders the canonical session template and sends it
-to a running Codex app-server thread through the plugin's Lua bridge.
+Xenocept plugin for Codex. It has two independent roles:
+
+- Destination: render the canonical session template and send it to a
+  running Codex app-server thread through the plugin's Lua bridge.
+- OCR: use the OpenAI Responses API to enrich submitted screenshots with
+  `ocr_text` and `alternative_description` for Xenocept search.
 
 ## Requirements
 
 - Xenocept running locally.
-- Codex app-server listening on a WebSocket URL reachable from the
-  Xenocept host process.
+- For destination delivery: Codex app-server listening on a WebSocket URL
+  reachable from the Xenocept host process.
+- For OCR: an OpenAI API key.
 
 For local testing:
 
@@ -23,6 +27,19 @@ when Codex was installed through the standalone installer. This machine's
 current Codex install does not provide that standalone daemon path, so
 the direct `codex app-server --listen ...` command is the practical dev
 route.
+
+OCR does not require Codex CLI or app-server. Configure it from the
+Codex plugin page in Xenocept's Plugins settings:
+
+- Enable Codex OCR.
+- Add an OpenAI API key.
+- Choose a vision model. `gpt-5.4-mini` is the default for lower-cost,
+  lower-latency per-screenshot OCR.
+- Hold the "make OCR master" button if Codex should run before the other
+  OCR plugins.
+
+OCR requests are sent to `https://api.openai.com/v1/responses` with
+`store: false`.
 
 ## Delivery Modes
 
