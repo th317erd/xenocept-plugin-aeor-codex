@@ -40,7 +40,7 @@ local function connect_codex(ws_url)
     clientInfo = {
       name = "xenocept-plugin-aeor-codex",
       title = "Xenocept Codex Destination",
-      version = "0.1.0",
+      version = "0.2.0",
     },
     capabilities = {
       experimentalApi = true,

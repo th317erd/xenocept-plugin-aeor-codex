@@ -84,7 +84,7 @@ export function setup(context) {
   register(class CodexPlugin extends context.Plugin {
     static pluginID    = PLUGIN_ID;
     static name        = 'Codex';
-    static version     = '0.1.0';
+    static version     = '0.2.0';
     static description = 'Send Xenocept sessions into a running Codex app-server thread, and optionally run OpenAI vision OCR for screenshot enrichment.';
     static role        = 'ocr';
 
@@ -951,7 +951,7 @@ export class CodexAppServerClient {
       clientInfo: {
         name: 'xenocept-plugin-aeor-codex',
         title: 'Xenocept Codex Destination',
-        version: '0.1.0',
+        version: '0.2.0',
       },
       capabilities: {
         experimentalApi: true,

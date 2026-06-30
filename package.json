@@ -1,6 +1,6 @@
 {
   "name": "xenocept-plugin-aeor-codex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Xenocept Codex plugin. Sends submitted sessions into Codex app-server and can run OpenAI vision OCR for screenshot enrichment.",
   "type": "module",
   "main": "index.mjs",
